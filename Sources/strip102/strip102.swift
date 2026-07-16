@@ -32,8 +32,8 @@ struct strip102: ParsableCommand {
     func idk() {
         var path = Path()
         // path.quad(to: Point(100, 100), control: Point(0, 100))
-        path.move(to: Point(1, 1))
-        path.line(to: Point(15, 7))
+        path.move(to: Point(1, 2))
+        path.line(to: Point(15, 8))
 
         let width = 100
         let height = 100

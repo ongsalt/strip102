@@ -45,35 +45,43 @@ func fillSparseStrip(
 
   for line in lines {
     print(line)
-    let yStart = line.yBounds.0 / tileSize
-    let yEnd = line.yBounds.1 / tileSize
+    let yStart = Int(line.start.y) / tileSize
+    let yEnd = Int(line.end.y) / tileSize
 
     // first bin line by y
     // for each segment: bin by x
     let dy = line.end.y - line.start.y
-    for y in yStart...yEnd {
+    let dir = if dy > 0 { 1 } else { -1 }
+    for y in stride(from: yStart, through: yEnd, by: dir) {
       let t1 = ((Float(tileSize * y) - line.start.y) / dy).clamped(from: 0.0, to: 1.0)
       let t2 = ((Float(tileSize * (y + 1)) - line.start.y) / dy).clamped(from: 0.0, to: 1.0)
 
       let yBinnedLine = Line(line.sample(t1), line.sample(t2))
       // print(" - \(yBinnedLine)")
 
-      let xStart = yBinnedLine.xBounds.0 / tileSize
-      let xEnd = yBinnedLine.xBounds.1 / tileSize
+      let xStart = Int(yBinnedLine.start.x) / tileSize
+      let xEnd = Int(yBinnedLine.end.x) / tileSize
       let dx = yBinnedLine.end.x - yBinnedLine.start.x
 
-      for x in xStart...xEnd {
+      let dir = if dx > 0 { 1 } else { -1 }
+      for x in stride(from: xStart, through: xEnd, by: dir) {
         let t1 = ((Float(tileSize * x) - yBinnedLine.start.x) / dx).clamped(from: 0.0, to: 1.0)
         let t2 = ((Float(tileSize * (x + 1)) - yBinnedLine.start.x) / dx).clamped(
           from: 0.0, to: 1.0)
 
         let xBinnedLine = Line(yBinnedLine.sample(t1), yBinnedLine.sample(t2))
-        let tile = Tile(x: UInt16(x), y: UInt16(y), line: xBinnedLine, hasWinding: xBinnedLine.start.y == Float(y * tileSize))
+        let tile = Tile(
+          x: UInt16(x), y: UInt16(y), line: xBinnedLine,
+          hasWinding: xBinnedLine.start.y == Float(y * tileSize))
         tiles.append(tile)
-        print("   - \(tile)")
+        print(" > \(tile)")
         if t2 == 1.0 {
           break
         }
+      }
+
+      if t2 == 1.0 {
+        break
       }
     }
 
