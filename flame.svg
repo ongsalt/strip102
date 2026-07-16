@@ -1,0 +1,2374 @@
+<?xml version="1.0" standalone="no"?>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+<svg version="1.1" width="1200" height="502" onload="init(evt)" viewBox="0 0 1200 502" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+<!-- Flame graph stack visualization. See https://github.com/brendangregg/FlameGraph for latest version, and http://www.brendangregg.com/flamegraphs.html for examples. -->
+<!-- NOTES:  -->
+<defs>
+	<linearGradient id="background" y1="0" y2="1" x1="0" x2="0" >
+		<stop stop-color="#eeeeee" offset="5%" />
+		<stop stop-color="#eeeeb0" offset="95%" />
+	</linearGradient>
+</defs>
+<style type="text/css">
+	text { font-family:Verdana; font-size:12px; fill:rgb(0,0,0); }
+	#search, #ignorecase { opacity:0.1; cursor:pointer; }
+	#search:hover, #search.show, #ignorecase:hover, #ignorecase.show { opacity:1; }
+	#subtitle { text-anchor:middle; font-color:rgb(160,160,160); }
+	#title { text-anchor:middle; font-size:17px}
+	#unzoom { cursor:pointer; }
+	#frames > *:hover { stroke:black; stroke-width:0.5; cursor:pointer; }
+	.hide { display:none; }
+	.parent { opacity:0.5; }
+</style>
+<script type="text/ecmascript">
+<![CDATA[
+	"use strict";
+	var details, searchbtn, unzoombtn, matchedtxt, svg, searching, currentSearchTerm, ignorecase, ignorecaseBtn;
+	function init(evt) {
+		details = document.getElementById("details").firstChild;
+		searchbtn = document.getElementById("search");
+		ignorecaseBtn = document.getElementById("ignorecase");
+		unzoombtn = document.getElementById("unzoom");
+		matchedtxt = document.getElementById("matched");
+		svg = document.getElementsByTagName("svg")[0];
+		searching = 0;
+		currentSearchTerm = null;
+
+		// use GET parameters to restore a flamegraphs state.
+		var params = get_params();
+		if (params.x && params.y)
+			zoom(find_group(document.querySelector('[x="' + params.x + '"][y="' + params.y + '"]')));
+                if (params.s) search(params.s);
+	}
+
+	// event listeners
+	window.addEventListener("click", function(e) {
+		var target = find_group(e.target);
+		if (target) {
+			if (target.nodeName == "a") {
+				if (e.ctrlKey === false) return;
+				e.preventDefault();
+			}
+			if (target.classList.contains("parent")) unzoom(true);
+			zoom(target);
+			if (!document.querySelector('.parent')) {
+				// we have basically done a clearzoom so clear the url
+				var params = get_params();
+				if (params.x) delete params.x;
+				if (params.y) delete params.y;
+				history.replaceState(null, null, parse_params(params));
+				unzoombtn.classList.add("hide");
+				return;
+			}
+
+			// set parameters for zoom state
+			var el = target.querySelector("rect");
+			if (el && el.attributes && el.attributes.y && el.attributes._orig_x) {
+				var params = get_params()
+				params.x = el.attributes._orig_x.value;
+				params.y = el.attributes.y.value;
+				history.replaceState(null, null, parse_params(params));
+			}
+		}
+		else if (e.target.id == "unzoom") clearzoom();
+		else if (e.target.id == "search") search_prompt();
+		else if (e.target.id == "ignorecase") toggle_ignorecase();
+	}, false)
+
+	// mouse-over for info
+	// show
+	window.addEventListener("mouseover", function(e) {
+		var target = find_group(e.target);
+		if (target) details.nodeValue = "Function: " + g_to_text(target);
+	}, false)
+
+	// clear
+	window.addEventListener("mouseout", function(e) {
+		var target = find_group(e.target);
+		if (target) details.nodeValue = ' ';
+	}, false)
+
+	// ctrl-F for search
+	// ctrl-I to toggle case-sensitive search
+	window.addEventListener("keydown",function (e) {
+		if (e.keyCode === 114 || (e.ctrlKey && e.keyCode === 70)) {
+			e.preventDefault();
+			search_prompt();
+		}
+		else if (e.ctrlKey && e.keyCode === 73) {
+			e.preventDefault();
+			toggle_ignorecase();
+		}
+	}, false)
+
+	// functions
+	function get_params() {
+		var params = {};
+		var paramsarr = window.location.search.substr(1).split('&');
+		for (var i = 0; i < paramsarr.length; ++i) {
+			var tmp = paramsarr[i].split("=");
+			if (!tmp[0] || !tmp[1]) continue;
+			params[tmp[0]]  = decodeURIComponent(tmp[1]);
+		}
+		return params;
+	}
+	function parse_params(params) {
+		var uri = "?";
+		for (var key in params) {
+			uri += key + '=' + encodeURIComponent(params[key]) + '&';
+		}
+		if (uri.slice(-1) == "&")
+			uri = uri.substring(0, uri.length - 1);
+		if (uri == '?')
+			uri = window.location.href.split('?')[0];
+		return uri;
+	}
+	function find_child(node, selector) {
+		var children = node.querySelectorAll(selector);
+		if (children.length) return children[0];
+	}
+	function find_group(node) {
+		var parent = node.parentElement;
+		if (!parent) return;
+		if (parent.id == "frames") return node;
+		return find_group(parent);
+	}
+	function orig_save(e, attr, val) {
+		if (e.attributes["_orig_" + attr] != undefined) return;
+		if (e.attributes[attr] == undefined) return;
+		if (val == undefined) val = e.attributes[attr].value;
+		e.setAttribute("_orig_" + attr, val);
+	}
+	function orig_load(e, attr) {
+		if (e.attributes["_orig_"+attr] == undefined) return;
+		e.attributes[attr].value = e.attributes["_orig_" + attr].value;
+		e.removeAttribute("_orig_"+attr);
+	}
+	function g_to_text(e) {
+		var text = find_child(e, "title").firstChild.nodeValue;
+		return (text)
+	}
+	function g_to_func(e) {
+		var func = g_to_text(e);
+		// if there's any manipulation we want to do to the function
+		// name before it's searched, do it here before returning.
+		return (func);
+	}
+	function update_text(e) {
+		var r = find_child(e, "rect");
+		var t = find_child(e, "text");
+		var w = parseFloat(r.attributes.width.value) -3;
+		var txt = find_child(e, "title").textContent.replace(/\([^(]*\)$/,"");
+		t.attributes.x.value = parseFloat(r.attributes.x.value) + 3;
+
+		// Smaller than this size won't fit anything
+		if (w < 2 * 12 * 0.59) {
+			t.textContent = "";
+			return;
+		}
+
+		t.textContent = txt;
+		var sl = t.getSubStringLength(0, txt.length);
+		// check if only whitespace or if we can fit the entire string into width w
+		if (/^ *$/.test(txt) || sl < w)
+			return;
+
+		// this isn't perfect, but gives a good starting point
+		// and avoids calling getSubStringLength too often
+		var start = Math.floor((w/sl) * txt.length);
+		for (var x = start; x > 0; x = x-2) {
+			if (t.getSubStringLength(0, x + 2) <= w) {
+				t.textContent = txt.substring(0, x) + "..";
+				return;
+			}
+		}
+		t.textContent = "";
+	}
+
+	// zoom
+	function zoom_reset(e) {
+		if (e.attributes != undefined) {
+			orig_load(e, "x");
+			orig_load(e, "width");
+		}
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_reset(c[i]);
+		}
+	}
+	function zoom_child(e, x, ratio) {
+		if (e.attributes != undefined) {
+			if (e.attributes.x != undefined) {
+				orig_save(e, "x");
+				e.attributes.x.value = (parseFloat(e.attributes.x.value) - x - 10) * ratio + 10;
+				if (e.tagName == "text")
+					e.attributes.x.value = find_child(e.parentNode, "rect[x]").attributes.x.value + 3;
+			}
+			if (e.attributes.width != undefined) {
+				orig_save(e, "width");
+				e.attributes.width.value = parseFloat(e.attributes.width.value) * ratio;
+			}
+		}
+
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_child(c[i], x - 10, ratio);
+		}
+	}
+	function zoom_parent(e) {
+		if (e.attributes) {
+			if (e.attributes.x != undefined) {
+				orig_save(e, "x");
+				e.attributes.x.value = 10;
+			}
+			if (e.attributes.width != undefined) {
+				orig_save(e, "width");
+				e.attributes.width.value = parseInt(svg.width.baseVal.value) - (10 * 2);
+			}
+		}
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_parent(c[i]);
+		}
+	}
+	function zoom(node) {
+		var attr = find_child(node, "rect").attributes;
+		var width = parseFloat(attr.width.value);
+		var xmin = parseFloat(attr.x.value);
+		var xmax = parseFloat(xmin + width);
+		var ymin = parseFloat(attr.y.value);
+		var ratio = (svg.width.baseVal.value - 2 * 10) / width;
+
+		// XXX: Workaround for JavaScript float issues (fix me)
+		var fudge = 0.0001;
+
+		unzoombtn.classList.remove("hide");
+
+		var el = document.getElementById("frames").children;
+		for (var i = 0; i < el.length; i++) {
+			var e = el[i];
+			var a = find_child(e, "rect").attributes;
+			var ex = parseFloat(a.x.value);
+			var ew = parseFloat(a.width.value);
+			var upstack;
+			// Is it an ancestor
+			if (0 == 0) {
+				upstack = parseFloat(a.y.value) > ymin;
+			} else {
+				upstack = parseFloat(a.y.value) < ymin;
+			}
+			if (upstack) {
+				// Direct ancestor
+				if (ex <= xmin && (ex+ew+fudge) >= xmax) {
+					e.classList.add("parent");
+					zoom_parent(e);
+					update_text(e);
+				}
+				// not in current path
+				else
+					e.classList.add("hide");
+			}
+			// Children maybe
+			else {
+				// no common path
+				if (ex < xmin || ex + fudge >= xmax) {
+					e.classList.add("hide");
+				}
+				else {
+					zoom_child(e, xmin, ratio);
+					update_text(e);
+				}
+			}
+		}
+		search();
+	}
+	function unzoom(dont_update_text) {
+		unzoombtn.classList.add("hide");
+		var el = document.getElementById("frames").children;
+		for(var i = 0; i < el.length; i++) {
+			el[i].classList.remove("parent");
+			el[i].classList.remove("hide");
+			zoom_reset(el[i]);
+			if(!dont_update_text) update_text(el[i]);
+		}
+		search();
+	}
+	function clearzoom() {
+		unzoom();
+
+		// remove zoom state
+		var params = get_params();
+		if (params.x) delete params.x;
+		if (params.y) delete params.y;
+		history.replaceState(null, null, parse_params(params));
+	}
+
+	// search
+	function toggle_ignorecase() {
+		ignorecase = !ignorecase;
+		if (ignorecase) {
+			ignorecaseBtn.classList.add("show");
+		} else {
+			ignorecaseBtn.classList.remove("show");
+		}
+		reset_search();
+		search();
+	}
+	function reset_search() {
+		var el = document.querySelectorAll("#frames rect");
+		for (var i = 0; i < el.length; i++) {
+			orig_load(el[i], "fill")
+		}
+		var params = get_params();
+		delete params.s;
+		history.replaceState(null, null, parse_params(params));
+	}
+	function search_prompt() {
+		if (!searching) {
+			var term = prompt("Enter a search term (regexp " +
+			    "allowed, eg: ^ext4_)"
+			    + (ignorecase ? ", ignoring case" : "")
+			    + "\nPress Ctrl-i to toggle case sensitivity", "");
+			if (term != null) search(term);
+		} else {
+			reset_search();
+			searching = 0;
+			currentSearchTerm = null;
+			searchbtn.classList.remove("show");
+			searchbtn.firstChild.nodeValue = "Search"
+			matchedtxt.classList.add("hide");
+			matchedtxt.firstChild.nodeValue = ""
+		}
+	}
+	function search(term) {
+		if (term) currentSearchTerm = term;
+		if (currentSearchTerm === null) return;
+
+		var re = new RegExp(currentSearchTerm, ignorecase ? 'i' : '');
+		var el = document.getElementById("frames").children;
+		var matches = new Object();
+		var maxwidth = 0;
+		for (var i = 0; i < el.length; i++) {
+			var e = el[i];
+			var func = g_to_func(e);
+			var rect = find_child(e, "rect");
+			if (func == null || rect == null)
+				continue;
+
+			// Save max width. Only works as we have a root frame
+			var w = parseFloat(rect.attributes.width.value);
+			if (w > maxwidth)
+				maxwidth = w;
+
+			if (func.match(re)) {
+				// highlight
+				var x = parseFloat(rect.attributes.x.value);
+				orig_save(rect, "fill");
+				rect.attributes.fill.value = "rgb(230,0,230)";
+
+				// remember matches
+				if (matches[x] == undefined) {
+					matches[x] = w;
+				} else {
+					if (w > matches[x]) {
+						// overwrite with parent
+						matches[x] = w;
+					}
+				}
+				searching = 1;
+			}
+		}
+		if (!searching)
+			return;
+		var params = get_params();
+		params.s = currentSearchTerm;
+		history.replaceState(null, null, parse_params(params));
+
+		searchbtn.classList.add("show");
+		searchbtn.firstChild.nodeValue = "Reset Search";
+
+		// calculate percent matched, excluding vertical overlap
+		var count = 0;
+		var lastx = -1;
+		var lastw = 0;
+		var keys = Array();
+		for (k in matches) {
+			if (matches.hasOwnProperty(k))
+				keys.push(k);
+		}
+		// sort the matched frames by their x location
+		// ascending, then width descending
+		keys.sort(function(a, b){
+			return a - b;
+		});
+		// Step through frames saving only the biggest bottom-up frames
+		// thanks to the sort order. This relies on the tree property
+		// where children are always smaller than their parents.
+		var fudge = 0.0001;	// JavaScript floating point
+		for (var k in keys) {
+			var x = parseFloat(keys[k]);
+			var w = matches[keys[k]];
+			if (x >= lastx + lastw - fudge) {
+				count += w;
+				lastx = x;
+				lastw = w;
+			}
+		}
+		// display matched percent
+		matchedtxt.classList.remove("hide");
+		var pct = 100 * count / maxwidth;
+		if (pct != 100) pct = pct.toFixed(1)
+		matchedtxt.firstChild.nodeValue = "Matched: " + pct + "%";
+	}
+]]>
+</script>
+<rect x="0.0" y="0" width="1200.0" height="502.0" fill="url(#background)"  />
+<text id="title" x="600.00" y="24" >Flame Graph</text>
+<text id="details" x="10.00" y="485" > </text>
+<text id="unzoom" x="10.00" y="24" class="hide">Reset Zoom</text>
+<text id="search" x="1090.00" y="24" >Search</text>
+<text id="ignorecase" x="1174.00" y="24" >ic</text>
+<text id="matched" x="1090.00" y="485" > </text>
+<g id="frames">
+<g >
+<title>?? (20,976,816 samples, 0.04%)</title><rect x="962.3" y="181" width="0.4" height="15.0" fill="rgb(249,205,49)" rx="2" ry="2" />
+<text  x="965.28" y="191.5" ></text>
+</g>
+<g >
+<title>isFlat (106,045,420 samples, 0.18%)</title><rect x="775.5" y="133" width="2.1" height="15.0" fill="rgb(216,53,12)" rx="2" ry="2" />
+<text  x="778.50" y="143.5" ></text>
+</g>
+<g >
+<title>append (51,216,779 samples, 0.09%)</title><rect x="779.1" y="117" width="1.0" height="15.0" fill="rgb(230,119,28)" rx="2" ry="2" />
+<text  x="782.08" y="127.5" ></text>
+</g>
+<g >
+<title>[unknown] (27,725,985 samples, 0.05%)</title><rect x="713.8" y="149" width="0.6" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="716.83" y="159.5" ></text>
+</g>
+<g >
+<title>nsvg__addPoint (5,311,919 samples, 0.01%)</title><rect x="1137.6" y="117" width="0.1" height="15.0" fill="rgb(214,43,10)" rx="2" ry="2" />
+<text  x="1140.64" y="127.5" ></text>
+</g>
+<g >
+<title>sample (174,754,366 samples, 0.30%)</title><rect x="856.8" y="213" width="3.5" height="15.0" fill="rgb(216,51,12)" rx="2" ry="2" />
+<text  x="859.84" y="223.5" ></text>
+</g>
+<g >
+<title>tcache_get (5,266,496 samples, 0.01%)</title><rect x="489.1" y="133" width="0.1" height="15.0" fill="rgb(253,222,53)" rx="2" ry="2" />
+<text  x="492.05" y="143.5" ></text>
+</g>
+<g >
+<title>__libc_free (7,308,248 samples, 0.01%)</title><rect x="484.3" y="133" width="0.1" height="15.0" fill="rgb(223,85,20)" rx="2" ry="2" />
+<text  x="487.26" y="143.5" ></text>
+</g>
+<g >
+<title>____strtol_l_internal (10,542,878 samples, 0.02%)</title><rect x="1189.5" y="405" width="0.2" height="15.0" fill="rgb(229,110,26)" rx="2" ry="2" />
+<text  x="1192.53" y="415.5" ></text>
+</g>
+<g >
+<title>merged Swift._NativeSet.init(capacity: Swift.Int) -&gt; Swift._NativeSet&lt;A&gt; (189,799,132 samples, 0.32%)</title><rect x="871.4" y="213" width="3.8" height="15.0" fill="rgb(207,12,3)" rx="2" ry="2" />
+<text  x="874.40" y="223.5" ></text>
+</g>
+<g >
+<title>swift_allocObject (7,334,709 samples, 0.01%)</title><rect x="489.8" y="197" width="0.1" height="15.0" fill="rgb(253,224,53)" rx="2" ry="2" />
+<text  x="492.77" y="207.5" ></text>
+</g>
+<g >
+<title>swift_allocObject (8,369,457 samples, 0.01%)</title><rect x="766.7" y="181" width="0.2" height="15.0" fill="rgb(253,224,53)" rx="2" ry="2" />
+<text  x="769.73" y="191.5" ></text>
+</g>
+<g >
+<title>__libc_malloc2 (7,353,692 samples, 0.01%)</title><rect x="870.6" y="149" width="0.1" height="15.0" fill="rgb(218,61,14)" rx="2" ry="2" />
+<text  x="873.56" y="159.5" ></text>
+</g>
+<g >
+<title>next (15,746,790 samples, 0.03%)</title><rect x="767.5" y="197" width="0.3" height="15.0" fill="rgb(225,96,23)" rx="2" ry="2" />
+<text  x="770.50" y="207.5" ></text>
+</g>
+<g >
+<title>__libc_malloc (8,415,737 samples, 0.01%)</title><rect x="485.4" y="133" width="0.1" height="15.0" fill="rgb(241,166,39)" rx="2" ry="2" />
+<text  x="488.36" y="143.5" ></text>
+</g>
+<g >
+<title>swift_release (14,874,613 samples, 0.03%)</title><rect x="1177.1" y="245" width="0.3" height="15.0" fill="rgb(240,164,39)" rx="2" ry="2" />
+<text  x="1180.10" y="255.5" ></text>
+</g>
+<g >
+<title>_int_malloc (8,444,129 samples, 0.01%)</title><rect x="1132.6" y="117" width="0.2" height="15.0" fill="rgb(215,47,11)" rx="2" ry="2" />
+<text  x="1135.61" y="127.5" ></text>
+</g>
+<g >
+<title>merged function signature specialization &lt;Arg[2] = Dead&gt; of static Swift.Hasher._hash(seed: Swift.Int, _: Swift.UInt64) -&gt; Swift.Int (5,287,253 samples, 0.01%)</title><rect x="1007.2" y="165" width="0.1" height="15.0" fill="rgb(216,52,12)" rx="2" ry="2" />
+<text  x="1010.24" y="175.5" ></text>
+</g>
+<g >
+<title>min (622,534,977 samples, 1.06%)</title><rect x="821.1" y="197" width="12.4" height="15.0" fill="rgb(220,71,17)" rx="2" ry="2" />
+<text  x="824.06" y="207.5" ></text>
+</g>
+<g >
+<title>__strncmp_avx2 (7,306,946 samples, 0.01%)</title><rect x="1124.7" y="149" width="0.2" height="15.0" fill="rgb(229,110,26)" rx="2" ry="2" />
+<text  x="1127.71" y="159.5" ></text>
+</g>
+<g >
+<title>nsvg__createGradients (8,310,768 samples, 0.01%)</title><rect x="1114.1" y="213" width="0.2" height="15.0" fill="rgb(247,193,46)" rx="2" ry="2" />
+<text  x="1117.13" y="223.5" ></text>
+</g>
+<g >
+<title>_swift_getGenericMetadata (9,396,710 samples, 0.02%)</title><rect x="870.4" y="165" width="0.2" height="15.0" fill="rgb(218,60,14)" rx="2" ry="2" />
+<text  x="873.38" y="175.5" ></text>
+</g>
+<g >
+<title>subscript.get (838,538,917 samples, 1.42%)</title><rect x="963.2" y="229" width="16.8" height="15.0" fill="rgb(247,195,46)" rx="2" ry="2" />
+<text  x="966.16" y="239.5" ></text>
+</g>
+<g >
+<title>__libc_malloc2 (8,369,457 samples, 0.01%)</title><rect x="766.7" y="149" width="0.2" height="15.0" fill="rgb(218,61,14)" rx="2" ry="2" />
+<text  x="769.73" y="159.5" ></text>
+</g>
+<g >
+<title>?? (34,528,867 samples, 0.06%)</title><rect x="154.3" y="197" width="0.7" height="15.0" fill="rgb(249,205,49)" rx="2" ry="2" />
+<text  x="157.29" y="207.5" ></text>
+</g>
+<g >
+<title>?? (23,018,962 samples, 0.04%)</title><rect x="962.7" y="213" width="0.5" height="15.0" fill="rgb(249,205,49)" rx="2" ry="2" />
+<text  x="965.70" y="223.5" ></text>
+</g>
+<g >
+<title>strip102 (58,862,956,329 samples, 100.00%)</title><rect x="10.0" y="437" width="1180.0" height="15.0" fill="rgb(233,131,31)" rx="2" ry="2" />
+<text  x="13.00" y="447.5" >strip102</text>
+</g>
+<g >
+<title>__memset_avx2_unaligned_erms (7,329,069 samples, 0.01%)</title><rect x="1114.4" y="197" width="0.1" height="15.0" fill="rgb(223,84,20)" rx="2" ry="2" />
+<text  x="1117.38" y="207.5" ></text>
+</g>
+<g >
+<title>swift_release (18,875,168 samples, 0.03%)</title><rect x="1008.7" y="229" width="0.4" height="15.0" fill="rgb(240,164,39)" rx="2" ry="2" />
+<text  x="1011.72" y="239.5" ></text>
+</g>
+<g >
+<title>_int_malloc (42,109,152 samples, 0.07%)</title><rect x="488.2" y="133" width="0.8" height="15.0" fill="rgb(215,47,11)" rx="2" ry="2" />
+<text  x="491.17" y="143.5" ></text>
+</g>
+<g >
+<title>init (25,119,423 samples, 0.04%)</title><rect x="870.9" y="213" width="0.5" height="15.0" fill="rgb(247,193,46)" rx="2" ry="2" />
+<text  x="873.90" y="223.5" ></text>
+</g>
+<g >
+<title>nsvg__parseNumber (134,326,026 samples, 0.23%)</title><rect x="1169.7" y="133" width="2.7" height="15.0" fill="rgb(237,149,35)" rx="2" ry="2" />
+<text  x="1172.66" y="143.5" ></text>
+</g>
+<g >
+<title>_swift_release_dealloc (5,157,707 samples, 0.01%)</title><rect x="154.7" y="165" width="0.1" height="15.0" fill="rgb(236,144,34)" rx="2" ry="2" />
+<text  x="157.73" y="175.5" ></text>
+</g>
+<g >
+<title>swift_release_n (11,473,911 samples, 0.02%)</title><rect x="468.0" y="197" width="0.3" height="15.0" fill="rgb(216,52,12)" rx="2" ry="2" />
+<text  x="471.03" y="207.5" ></text>
+</g>
+<g >
+<title>__strcmp_avx2 (67,472,800 samples, 0.11%)</title><rect x="1123.4" y="149" width="1.3" height="15.0" fill="rgb(239,159,38)" rx="2" ry="2" />
+<text  x="1126.36" y="159.5" ></text>
+</g>
+<g >
+<title>clamped (258,278,178 samples, 0.44%)</title><rect x="851.6" y="213" width="5.2" height="15.0" fill="rgb(223,85,20)" rx="2" ry="2" />
+<text  x="854.65" y="223.5" ></text>
+</g>
+<g >
+<title>log_inline (310,650,770 samples, 0.53%)</title><rect x="1160.7" y="101" width="6.2" height="15.0" fill="rgb(241,169,40)" rx="2" ry="2" />
+<text  x="1163.68" y="111.5" ></text>
+</g>
+<g >
+<title>breakIntoLines (1,311,662,034 samples, 2.23%)</title><rect x="762.8" y="229" width="26.3" height="15.0" fill="rgb(250,207,49)" rx="2" ry="2" />
+<text  x="765.79" y="239.5" >b..</text>
+</g>
+<g >
+<title>__libc_free (11,901,049 samples, 0.02%)</title><rect x="762.2" y="197" width="0.3" height="15.0" fill="rgb(223,85,20)" rx="2" ry="2" />
+<text  x="765.21" y="207.5" ></text>
+</g>
+<g >
+<title>_int_free_chunk (280,896,262 samples, 0.48%)</title><rect x="146.3" y="421" width="5.7" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="149.34" y="431.5" ></text>
+</g>
+<g >
+<title>fillScanline (579,161,727 samples, 0.98%)</title><rect x="1177.9" y="421" width="11.6" height="15.0" fill="rgb(229,110,26)" rx="2" ry="2" />
+<text  x="1180.87" y="431.5" ></text>
+</g>
+<g >
+<title>clipX (2,545,946,314 samples, 4.33%)</title><rect x="789.1" y="229" width="51.0" height="15.0" fill="rgb(206,4,1)" rx="2" ry="2" />
+<text  x="792.08" y="239.5" >clipX</text>
+</g>
+<g >
+<title>dl_main (12,981,014 samples, 0.02%)</title><rect x="1177.5" y="357" width="0.2" height="15.0" fill="rgb(236,145,34)" rx="2" ry="2" />
+<text  x="1180.46" y="367.5" ></text>
+</g>
+<g >
+<title>Swift.Int._rawHashValue(seed: Swift.Int) -&gt; Swift.Int (101,945,196 samples, 0.17%)</title><rect x="1004.5" y="181" width="2.0" height="15.0" fill="rgb(213,37,8)" rx="2" ry="2" />
+<text  x="1007.49" y="191.5" ></text>
+</g>
+<g >
+<title>swift_retain (42,914,817 samples, 0.07%)</title><rect x="1009.5" y="229" width="0.9" height="15.0" fill="rgb(247,197,47)" rx="2" ry="2" />
+<text  x="1012.53" y="239.5" ></text>
+</g>
+<g >
+<title>append (33,907,479 samples, 0.06%)</title><rect x="770.9" y="149" width="0.7" height="15.0" fill="rgb(230,119,28)" rx="2" ry="2" />
+<text  x="773.92" y="159.5" ></text>
+</g>
+<g >
+<title>append (33,626,948 samples, 0.06%)</title><rect x="784.1" y="101" width="0.7" height="15.0" fill="rgb(230,119,28)" rx="2" ry="2" />
+<text  x="787.12" y="111.5" ></text>
+</g>
+<g >
+<title>checked_request2size (15,851,603 samples, 0.03%)</title><rect x="142.6" y="405" width="0.3" height="15.0" fill="rgb(252,219,52)" rx="2" ry="2" />
+<text  x="145.63" y="415.5" ></text>
+</g>
+<g >
+<title>_int_free_chunk (50,675,819 samples, 0.09%)</title><rect x="759.8" y="133" width="1.1" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="762.85" y="143.5" ></text>
+</g>
+<g >
+<title>?? (24,191,752 samples, 0.04%)</title><rect x="779.6" y="69" width="0.5" height="15.0" fill="rgb(249,205,49)" rx="2" ry="2" />
+<text  x="782.58" y="79.5" ></text>
+</g>
+<g >
+<title>?? (96,669,239 samples, 0.16%)</title><rect x="875.4" y="213" width="1.9" height="15.0" fill="rgb(249,205,49)" rx="2" ry="2" />
+<text  x="878.40" y="223.5" ></text>
+</g>
+<g >
+<title>swift_release (18,895,282 samples, 0.03%)</title><rect x="761.3" y="165" width="0.4" height="15.0" fill="rgb(240,164,39)" rx="2" ry="2" />
+<text  x="764.33" y="175.5" ></text>
+</g>
+<g >
+<title>swift_allocObject (6,291,757 samples, 0.01%)</title><rect x="154.9" y="181" width="0.1" height="15.0" fill="rgb(253,224,53)" rx="2" ry="2" />
+<text  x="157.85" y="191.5" ></text>
+</g>
+<g >
+<title>?? (771,284,721 samples, 1.31%)</title><rect x="964.3" y="213" width="15.4" height="15.0" fill="rgb(249,205,49)" rx="2" ry="2" />
+<text  x="967.27" y="223.5" ></text>
+</g>
+<g >
+<title>span.get (23,018,962 samples, 0.04%)</title><rect x="962.7" y="229" width="0.5" height="15.0" fill="rgb(245,186,44)" rx="2" ry="2" />
+<text  x="965.70" y="239.5" ></text>
+</g>
+<g >
+<title>?? (395,998,116 samples, 0.67%)</title><rect x="862.9" y="213" width="8.0" height="15.0" fill="rgb(249,205,49)" rx="2" ry="2" />
+<text  x="865.92" y="223.5" ></text>
+</g>
+<g >
+<title>__libc_start_call_main (51,138,222,470 samples, 86.88%)</title><rect x="152.3" y="389" width="1025.2" height="15.0" fill="rgb(210,26,6)" rx="2" ry="2" />
+<text  x="155.31" y="399.5" >__libc_start_call_main</text>
+</g>
+<g >
+<title>swift_slowAlloc (7,353,692 samples, 0.01%)</title><rect x="870.6" y="165" width="0.1" height="15.0" fill="rgb(253,223,53)" rx="2" ry="2" />
+<text  x="873.56" y="175.5" ></text>
+</g>
+<g >
+<title>?? (54,809,244 samples, 0.09%)</title><rect x="947.7" y="133" width="1.1" height="15.0" fill="rgb(249,205,49)" rx="2" ry="2" />
+<text  x="950.67" y="143.5" ></text>
+</g>
+<g >
+<title>isFlat (110,556,203 samples, 0.19%)</title><rect x="771.6" y="149" width="2.2" height="15.0" fill="rgb(216,53,12)" rx="2" ry="2" />
+<text  x="774.60" y="159.5" ></text>
+</g>
+<g >
+<title>reserveCapacity (18,843,459 samples, 0.03%)</title><rect x="766.5" y="213" width="0.4" height="15.0" fill="rgb(219,68,16)" rx="2" ry="2" />
+<text  x="769.54" y="223.5" ></text>
+</g>
+<g >
+<title>_int_malloc (9,488,809 samples, 0.02%)</title><rect x="1130.3" y="133" width="0.2" height="15.0" fill="rgb(215,47,11)" rx="2" ry="2" />
+<text  x="1133.32" y="143.5" ></text>
+</g>
+<g >
+<title>nsvg__parseAttribs (43,104,329 samples, 0.07%)</title><rect x="1172.7" y="149" width="0.9" height="15.0" fill="rgb(213,41,9)" rx="2" ry="2" />
+<text  x="1175.69" y="159.5" ></text>
+</g>
+<g >
+<title>swift::metadataimpl::ValueWitnesses&lt;swift::metadataimpl::SwiftRetainableBox&gt;::destroy (5,252,892 samples, 0.01%)</title><rect x="761.7" y="181" width="0.1" height="15.0" fill="rgb(248,200,47)" rx="2" ry="2" />
+<text  x="764.71" y="191.5" ></text>
+</g>
+<g >
+<title>_int_free_merge_chunk (12,569,982 samples, 0.02%)</title><rect x="152.0" y="421" width="0.3" height="15.0" fill="rgb(240,163,39)" rx="2" ry="2" />
+<text  x="155.02" y="431.5" ></text>
+</g>
+<g >
+<title>__derived_struct_equals (16,895,560 samples, 0.03%)</title><rect x="766.1" y="165" width="0.3" height="15.0" fill="rgb(206,5,1)" rx="2" ry="2" />
+<text  x="769.09" y="175.5" ></text>
+</g>
+<g >
+<title>Swift._DictionaryStorage.deinit (167,430,674 samples, 0.28%)</title><rect x="758.4" y="181" width="3.3" height="15.0" fill="rgb(208,17,4)" rx="2" ry="2" />
+<text  x="761.35" y="191.5" ></text>
+</g>
+<g >
+<title>nsvg__isspace (19,070,903 samples, 0.03%)</title><rect x="1169.3" y="133" width="0.4" height="15.0" fill="rgb(248,201,48)" rx="2" ry="2" />
+<text  x="1172.28" y="143.5" ></text>
+</g>
+<g >
+<title>nsvg__parseCoordinate (9,414,272 samples, 0.02%)</title><rect x="1129.3" y="149" width="0.2" height="15.0" fill="rgb(206,7,1)" rx="2" ry="2" />
+<text  x="1132.32" y="159.5" ></text>
+</g>
+<g >
+<title>resolve_map (9,694,554 samples, 0.02%)</title><rect x="1177.5" y="277" width="0.2" height="15.0" fill="rgb(234,135,32)" rx="2" ry="2" />
+<text  x="1180.51" y="287.5" ></text>
+</g>
+<g >
+<title>merged function signature specialization &lt;Arg[2] = Dead&gt; of static Swift.Hasher._hash(seed: Swift.Int, _: Swift.UInt64) -&gt; Swift.Int (101,945,196 samples, 0.17%)</title><rect x="1004.5" y="165" width="2.0" height="15.0" fill="rgb(216,52,12)" rx="2" ry="2" />
+<text  x="1007.49" y="175.5" ></text>
+</g>
+<g >
+<title>Swift._ContiguousArrayStorage.__deallocating_deinit (15,756,050 samples, 0.03%)</title><rect x="759.2" y="133" width="0.4" height="15.0" fill="rgb(241,167,40)" rx="2" ry="2" />
+<text  x="762.24" y="143.5" ></text>
+</g>
+<g >
+<title>tcache_get_n (5,266,496 samples, 0.01%)</title><rect x="489.1" y="117" width="0.1" height="15.0" fill="rgb(229,110,26)" rx="2" ry="2" />
+<text  x="492.05" y="127.5" ></text>
+</g>
+<g >
+<title>__pow (830,723,109 samples, 1.41%)</title><rect x="1150.5" y="133" width="16.6" height="15.0" fill="rgb(226,100,24)" rx="2" ry="2" />
+<text  x="1153.47" y="143.5" ></text>
+</g>
+<g >
+<title>append (45,245,738 samples, 0.08%)</title><rect x="768.4" y="165" width="0.9" height="15.0" fill="rgb(230,119,28)" rx="2" ry="2" />
+<text  x="771.39" y="175.5" ></text>
+</g>
+<g >
+<title>static Swift._DictionaryStorage.allocate(scale: Swift.Int8, age: Swift.Int32?, seed: Swift.Int?) -&gt; Swift._DictionaryStorage&lt;A, B&gt; (34,768,981 samples, 0.06%)</title><rect x="1007.0" y="181" width="0.7" height="15.0" fill="rgb(216,51,12)" rx="2" ry="2" />
+<text  x="1010.01" y="191.5" ></text>
+</g>
+<g >
+<title>nsvg__endElement (5,229,557 samples, 0.01%)</title><rect x="1122.5" y="181" width="0.1" height="15.0" fill="rgb(233,131,31)" rx="2" ry="2" />
+<text  x="1125.47" y="191.5" ></text>
+</g>
+<g >
+<title>init (18,841,486 samples, 0.03%)</title><rect x="871.0" y="197" width="0.4" height="15.0" fill="rgb(247,193,46)" rx="2" ry="2" />
+<text  x="874.02" y="207.5" ></text>
+</g>
+<g >
+<title>nsvg__cubicBezTo (10,560,452 samples, 0.02%)</title><rect x="1174.4" y="133" width="0.2" height="15.0" fill="rgb(232,125,29)" rx="2" ry="2" />
+<text  x="1177.36" y="143.5" ></text>
+</g>
+<g >
+<title>lerp (18,913,266 samples, 0.03%)</title><rect x="783.0" y="101" width="0.4" height="15.0" fill="rgb(253,223,53)" rx="2" ry="2" />
+<text  x="786.04" y="111.5" ></text>
+</g>
+<g >
+<title>nsvg__parseSVG (6,292,326 samples, 0.01%)</title><rect x="1129.6" y="181" width="0.1" height="15.0" fill="rgb(222,81,19)" rx="2" ry="2" />
+<text  x="1132.57" y="191.5" ></text>
+</g>
+<g >
+<title>tcache_put_n (6,246,327 samples, 0.01%)</title><rect x="484.3" y="101" width="0.1" height="15.0" fill="rgb(217,58,13)" rx="2" ry="2" />
+<text  x="487.28" y="111.5" ></text>
+</g>
+<g >
+<title>cross (23,250,462 samples, 0.04%)</title><rect x="782.0" y="101" width="0.5" height="15.0" fill="rgb(234,136,32)" rx="2" ry="2" />
+<text  x="785.01" y="111.5" ></text>
+</g>
+<g >
+<title>?? (732,763,610 samples, 1.24%)</title><rect x="475.0" y="197" width="14.7" height="15.0" fill="rgb(249,205,49)" rx="2" ry="2" />
+<text  x="478.04" y="207.5" ></text>
+</g>
+<g >
+<title>static Swift.Hasher._hash(seed: Swift.Int, _: Swift.UInt64) -&gt; Swift.Int (9,467,154 samples, 0.02%)</title><rect x="979.8" y="213" width="0.2" height="15.0" fill="rgb(229,113,27)" rx="2" ry="2" />
+<text  x="982.78" y="223.5" ></text>
+</g>
+<g >
+<title>__uflow (7,246,129 samples, 0.01%)</title><rect x="1128.9" y="85" width="0.2" height="15.0" fill="rgb(238,151,36)" rx="2" ry="2" />
+<text  x="1131.94" y="95.5" ></text>
+</g>
+<g >
+<title>_dl_start_final (12,989,585 samples, 0.02%)</title><rect x="1177.5" y="389" width="0.2" height="15.0" fill="rgb(252,216,51)" rx="2" ry="2" />
+<text  x="1180.46" y="399.5" ></text>
+</g>
+<g >
+<title>tcache_put (6,246,327 samples, 0.01%)</title><rect x="484.3" y="117" width="0.1" height="15.0" fill="rgb(241,169,40)" rx="2" ry="2" />
+<text  x="487.28" y="127.5" ></text>
+</g>
+<g >
+<title>swift_release (14,744,510 samples, 0.03%)</title><rect x="489.2" y="181" width="0.3" height="15.0" fill="rgb(240,164,39)" rx="2" ry="2" />
+<text  x="492.16" y="191.5" ></text>
+</g>
+<g >
+<title>count.get (25,229,320 samples, 0.04%)</title><rect x="868.8" y="165" width="0.5" height="15.0" fill="rgb(226,100,24)" rx="2" ry="2" />
+<text  x="871.84" y="175.5" ></text>
+</g>
+<g >
+<title>?? (8,459,840 samples, 0.01%)</title><rect x="786.0" y="69" width="0.2" height="15.0" fill="rgb(249,205,49)" rx="2" ry="2" />
+<text  x="789.03" y="79.5" ></text>
+</g>
+<g >
+<title>std::pair&lt;swift::GenericCacheEntry*, swift::MetadataResponse&gt; swift::LockingConcurrentMap&lt;swift::GenericCacheEntry, swift::LockingConcurrentMapStorage&lt;swift::GenericCacheEntry,  (35,635,414 samples, 0.06%)</title><rect x="872.7" y="165" width="0.7" height="15.0" fill="rgb(243,177,42)" rx="2" ry="2" />
+<text  x="875.73" y="175.5" ></text>
+</g>
+<g >
+<title>strip102_main (51,138,222,470 samples, 86.88%)</title><rect x="152.3" y="373" width="1025.2" height="15.0" fill="rgb(250,207,49)" rx="2" ry="2" />
+<text  x="155.31" y="383.5" >strip102_main</text>
+</g>
+<g >
+<title>Swift.Int._rawHashValue(seed: Swift.Int) -&gt; Swift.Int (84,161,302 samples, 0.14%)</title><rect x="978.0" y="181" width="1.7" height="15.0" fill="rgb(213,37,8)" rx="2" ry="2" />
+<text  x="980.96" y="191.5" ></text>
+</g>
+<g >
+<title>swift_slowAlloc (37,603,065 samples, 0.06%)</title><rect x="484.8" y="149" width="0.7" height="15.0" fill="rgb(253,223,53)" rx="2" ry="2" />
+<text  x="487.78" y="159.5" ></text>
+</g>
+<g >
+<title>lerp (9,470,527 samples, 0.02%)</title><rect x="773.9" y="133" width="0.2" height="15.0" fill="rgb(253,223,53)" rx="2" ry="2" />
+<text  x="776.92" y="143.5" ></text>
+</g>
+<g >
+<title>max (18,986,286 samples, 0.03%)</title><rect x="773.4" y="133" width="0.4" height="15.0" fill="rgb(207,12,2)" rx="2" ry="2" />
+<text  x="776.43" y="143.5" ></text>
+</g>
+<g >
+<title>_int_malloc (7,353,692 samples, 0.01%)</title><rect x="870.6" y="133" width="0.1" height="15.0" fill="rgb(215,47,11)" rx="2" ry="2" />
+<text  x="873.56" y="143.5" ></text>
+</g>
+<g >
+<title>split (24,181,611 samples, 0.04%)</title><rect x="782.9" y="117" width="0.5" height="15.0" fill="rgb(221,77,18)" rx="2" ry="2" />
+<text  x="785.94" y="127.5" ></text>
+</g>
+<g >
+<title>walk (540,819,318 samples, 0.92%)</title><rect x="778.2" y="133" width="10.9" height="15.0" fill="rgb(229,111,26)" rx="2" ry="2" />
+<text  x="781.24" y="143.5" ></text>
+</g>
+<g >
+<title>?? (20,976,816 samples, 0.04%)</title><rect x="962.3" y="165" width="0.4" height="15.0" fill="rgb(249,205,49)" rx="2" ry="2" />
+<text  x="965.28" y="175.5" ></text>
+</g>
+<g >
+<title>appendLines (102,080,762 samples, 0.17%)</title><rect x="768.4" y="181" width="2.0" height="15.0" fill="rgb(205,3,0)" rx="2" ry="2" />
+<text  x="771.39" y="191.5" ></text>
+</g>
+<g >
+<title>cross (5,299,648 samples, 0.01%)</title><rect x="788.6" y="69" width="0.1" height="15.0" fill="rgb(234,136,32)" rx="2" ry="2" />
+<text  x="791.56" y="79.5" ></text>
+</g>
+<g >
+<title>?? (59,705,103 samples, 0.10%)</title><rect x="961.1" y="165" width="1.2" height="15.0" fill="rgb(249,205,49)" rx="2" ry="2" />
+<text  x="964.08" y="175.5" ></text>
+</g>
+<g >
+<title>?? (205,929,182 samples, 0.35%)</title><rect x="866.2" y="197" width="4.1" height="15.0" fill="rgb(249,205,49)" rx="2" ry="2" />
+<text  x="869.16" y="207.5" ></text>
+</g>
+<g >
+<title>_swift_stdlib_malloc_size (78,861,296 samples, 0.13%)</title><rect x="485.8" y="181" width="1.6" height="15.0" fill="rgb(219,64,15)" rx="2" ry="2" />
+<text  x="488.78" y="191.5" ></text>
+</g>
+<g >
+<title>append (56,579,280 samples, 0.10%)</title><rect x="153.9" y="245" width="1.1" height="15.0" fill="rgb(230,119,28)" rx="2" ry="2" />
+<text  x="156.89" y="255.5" ></text>
+</g>
+<g >
+<title>nsvg__startElement (2,267,972,274 samples, 3.85%)</title><rect x="1129.7" y="181" width="45.5" height="15.0" fill="rgb(238,152,36)" rx="2" ry="2" />
+<text  x="1132.69" y="191.5" >nsvg..</text>
+</g>
+<g >
+<title>abs (9,481,586 samples, 0.02%)</title><rect x="781.8" y="101" width="0.2" height="15.0" fill="rgb(210,27,6)" rx="2" ry="2" />
+<text  x="784.82" y="111.5" ></text>
+</g>
+<g >
+<title>nsvg__parseColorHex (220,237,567 samples, 0.37%)</title><rect x="1124.9" y="133" width="4.4" height="15.0" fill="rgb(229,112,26)" rx="2" ry="2" />
+<text  x="1127.90" y="143.5" ></text>
+</g>
+<g >
+<title>?? (1,933,697,560 samples, 3.29%)</title><rect x="899.2" y="213" width="38.7" height="15.0" fill="rgb(249,205,49)" rx="2" ry="2" />
+<text  x="902.16" y="223.5" >??</text>
+</g>
+<g >
+<title>merged function signature specialization &lt;Arg[2] = Dead&gt; of static Swift.Hasher._hash(seed: Swift.Int, _: Swift.UInt64) -&gt; Swift.Int (33,697,392 samples, 0.06%)</title><rect x="1003.7" y="133" width="0.7" height="15.0" fill="rgb(216,52,12)" rx="2" ry="2" />
+<text  x="1006.69" y="143.5" ></text>
+</g>
+<g >
+<title>xBounds.get (935,133,006 samples, 1.59%)</title><rect x="1089.8" y="229" width="18.8" height="15.0" fill="rgb(225,93,22)" rx="2" ry="2" />
+<text  x="1092.84" y="239.5" ></text>
+</g>
+<g >
+<title>scratch_buffer_init (6,310,350 samples, 0.01%)</title><rect x="1129.2" y="85" width="0.1" height="15.0" fill="rgb(217,59,14)" rx="2" ry="2" />
+<text  x="1132.19" y="95.5" ></text>
+</g>
+<g >
+<title>__swift_instantiateCanonicalPrespecializedGenericMetadata (102,878,767 samples, 0.17%)</title><rect x="871.4" y="197" width="2.1" height="15.0" fill="rgb(226,96,23)" rx="2" ry="2" />
+<text  x="874.44" y="207.5" ></text>
+</g>
+<g >
+<title>update (3,944,816,627 samples, 6.70%)</title><rect x="1010.8" y="229" width="79.0" height="15.0" fill="rgb(209,22,5)" rx="2" ry="2" />
+<text  x="1013.76" y="239.5" >update</text>
+</g>
+<g >
+<title>nsvg__parseAttr (33,622,087 samples, 0.06%)</title><rect x="1172.9" y="133" width="0.7" height="15.0" fill="rgb(218,60,14)" rx="2" ry="2" />
+<text  x="1175.88" y="143.5" ></text>
+</g>
+<g >
+<title>?? (763,442,536 samples, 1.30%)</title><rect x="940.0" y="181" width="15.3" height="15.0" fill="rgb(249,205,49)" rx="2" ry="2" />
+<text  x="943.03" y="191.5" ></text>
+</g>
+<g >
+<title>cross (8,407,920 samples, 0.01%)</title><rect x="777.0" y="117" width="0.2" height="15.0" fill="rgb(234,136,32)" rx="2" ry="2" />
+<text  x="780.02" y="127.5" ></text>
+</g>
+<g >
+<title>contains (346,378,580 samples, 0.59%)</title><rect x="955.3" y="181" width="7.0" height="15.0" fill="rgb(238,154,37)" rx="2" ry="2" />
+<text  x="958.33" y="191.5" ></text>
+</g>
+<g >
+<title>walk (85,921,741 samples, 0.15%)</title><rect x="787.4" y="101" width="1.7" height="15.0" fill="rgb(229,111,26)" rx="2" ry="2" />
+<text  x="790.36" y="111.5" ></text>
+</g>
+<g >
+<title>?? (195,771,694 samples, 0.33%)</title><rect x="1000.5" y="165" width="3.9" height="15.0" fill="rgb(249,205,49)" rx="2" ry="2" />
+<text  x="1003.50" y="175.5" ></text>
+</g>
+<g >
+<title>swift_slowAlloc (16,901,457 samples, 0.03%)</title><rect x="1007.4" y="149" width="0.3" height="15.0" fill="rgb(253,223,53)" rx="2" ry="2" />
+<text  x="1010.37" y="159.5" ></text>
+</g>
+<g >
+<title>nsvg__parseAttribs (330,597,113 samples, 0.56%)</title><rect x="1122.9" y="181" width="6.7" height="15.0" fill="rgb(213,41,9)" rx="2" ry="2" />
+<text  x="1125.94" y="191.5" ></text>
+</g>
+<g >
+<title>swift_deallocClassInstance (8,503,275 samples, 0.01%)</title><rect x="760.9" y="133" width="0.1" height="15.0" fill="rgb(228,107,25)" rx="2" ry="2" />
+<text  x="763.86" y="143.5" ></text>
+</g>
+<g >
+<title>_int_free_create_chunk (139,427,259 samples, 0.24%)</title><rect x="148.8" y="389" width="2.8" height="15.0" fill="rgb(244,182,43)" rx="2" ry="2" />
+<text  x="151.78" y="399.5" ></text>
+</g>
+<g >
+<title>append (37,942,473 samples, 0.06%)</title><rect x="774.7" y="133" width="0.8" height="15.0" fill="rgb(230,119,28)" rx="2" ry="2" />
+<text  x="777.74" y="143.5" ></text>
+</g>
+<g >
+<title>_IO_sputbackc (11,559,982 samples, 0.02%)</title><rect x="1128.1" y="85" width="0.3" height="15.0" fill="rgb(252,219,52)" rx="2" ry="2" />
+<text  x="1131.13" y="95.5" ></text>
+</g>
+<g >
+<title>?? (15,759,723 samples, 0.03%)</title><rect x="787.5" y="69" width="0.3" height="15.0" fill="rgb(249,205,49)" rx="2" ry="2" />
+<text  x="790.48" y="79.5" ></text>
+</g>
+<g >
+<title>Swift._ContiguousArrayBuffer.init(_uninitializedCount: Swift.Int, minimumCapacity: Swift.Int) -&gt; Swift._ContiguousArrayBuffer&lt;A&gt; (24,061,842 samples, 0.04%)</title><rect x="870.3" y="197" width="0.5" height="15.0" fill="rgb(212,34,8)" rx="2" ry="2" />
+<text  x="873.29" y="207.5" ></text>
+</g>
+<g >
+<title>?? (18,843,459 samples, 0.03%)</title><rect x="766.5" y="197" width="0.4" height="15.0" fill="rgb(249,205,49)" rx="2" ry="2" />
+<text  x="769.54" y="207.5" ></text>
+</g>
+<g >
+<title>swift::MetadataCacheEntryBase&lt;swift::GenericCacheEntry, void const*&gt;::awaitSatisfyingState (5,271,112 samples, 0.01%)</title><rect x="873.1" y="149" width="0.2" height="15.0" fill="rgb(212,34,8)" rx="2" ry="2" />
+<text  x="876.15" y="159.5" ></text>
+</g>
+<g >
+<title>fseek (6,256,120 samples, 0.01%)</title><rect x="1114.0" y="229" width="0.1" height="15.0" fill="rgb(215,48,11)" rx="2" ry="2" />
+<text  x="1117.00" y="239.5" ></text>
+</g>
+<g >
+<title>unlink_chunk (20,822,956 samples, 0.04%)</title><rect x="151.2" y="373" width="0.4" height="15.0" fill="rgb(236,146,34)" rx="2" ry="2" />
+<text  x="154.16" y="383.5" ></text>
+</g>
+<g >
+<title>bool swift::RefCounts&lt;swift::RefCountBitsT&lt; (8,583,132 samples, 0.01%)</title><rect x="775.3" y="69" width="0.1" height="15.0" fill="rgb(226,96,23)" rx="2" ry="2" />
+<text  x="778.27" y="79.5" ></text>
+</g>
+<g >
+<title>__ceil_sse41 (10,519,422 samples, 0.02%)</title><rect x="124.3" y="421" width="0.2" height="15.0" fill="rgb(213,40,9)" rx="2" ry="2" />
+<text  x="127.29" y="431.5" ></text>
+</g>
+<g >
+<title>unlink_chunk (17,703,817 samples, 0.03%)</title><rect x="151.6" y="389" width="0.4" height="15.0" fill="rgb(236,146,34)" rx="2" ry="2" />
+<text  x="154.62" y="399.5" ></text>
+</g>
+<g >
+<title>isFlat (52,476,595 samples, 0.09%)</title><rect x="787.8" y="85" width="1.1" height="15.0" fill="rgb(216,53,12)" rx="2" ry="2" />
+<text  x="790.80" y="95.5" ></text>
+</g>
+<g >
+<title>identity (5,267,882 samples, 0.01%)</title><rect x="766.4" y="165" width="0.1" height="15.0" fill="rgb(217,57,13)" rx="2" ry="2" />
+<text  x="769.43" y="175.5" ></text>
+</g>
+<g >
+<title>yBounds.get (260,488,280 samples, 0.44%)</title><rect x="1108.6" y="229" width="5.2" height="15.0" fill="rgb(218,63,15)" rx="2" ry="2" />
+<text  x="1111.59" y="239.5" ></text>
+</g>
+<g >
+<title>nsvg__xformPoint (12,648,320 samples, 0.02%)</title><rect x="1138.4" y="133" width="0.3" height="15.0" fill="rgb(241,166,39)" rx="2" ry="2" />
+<text  x="1141.43" y="143.5" ></text>
+</g>
+<g >
+<title>nsvg__isCoordinate (16,885,459 samples, 0.03%)</title><rect x="1172.4" y="149" width="0.3" height="15.0" fill="rgb(217,56,13)" rx="2" ry="2" />
+<text  x="1175.35" y="159.5" ></text>
+</g>
+<g >
+<title>?? (9,287,378 samples, 0.02%)</title><rect x="776.8" y="101" width="0.2" height="15.0" fill="rgb(249,205,49)" rx="2" ry="2" />
+<text  x="779.83" y="111.5" ></text>
+</g>
+<g >
+<title>lerp (328,395,806 samples, 0.56%)</title><rect x="833.5" y="197" width="6.6" height="15.0" fill="rgb(253,223,53)" rx="2" ry="2" />
+<text  x="836.53" y="207.5" ></text>
+</g>
+<g >
+<title>__libc_malloc2 (524,512,351 samples, 0.89%)</title><rect x="132.1" y="421" width="10.5" height="15.0" fill="rgb(218,61,14)" rx="2" ry="2" />
+<text  x="135.11" y="431.5" ></text>
+</g>
+<g >
+<title>nsvg__parseXML (3,023,557,765 samples, 5.14%)</title><rect x="1114.5" y="213" width="60.7" height="15.0" fill="rgb(216,52,12)" rx="2" ry="2" />
+<text  x="1117.55" y="223.5" >nsvg__..</text>
+</g>
+<g >
+<title>_int_free_create_chunk (8,401,192 samples, 0.01%)</title><rect x="152.0" y="405" width="0.2" height="15.0" fill="rgb(244,182,43)" rx="2" ry="2" />
+<text  x="155.02" y="415.5" ></text>
+</g>
+<g >
+<title>?? (33,907,479 samples, 0.06%)</title><rect x="770.9" y="133" width="0.7" height="15.0" fill="rgb(249,205,49)" rx="2" ry="2" />
+<text  x="773.92" y="143.5" ></text>
+</g>
+<g >
+<title>?? (38,732,926 samples, 0.07%)</title><rect x="154.2" y="213" width="0.8" height="15.0" fill="rgb(249,205,49)" rx="2" ry="2" />
+<text  x="157.24" y="223.5" ></text>
+</g>
+<g >
+<title>split (30,409,385 samples, 0.05%)</title><rect x="777.6" y="133" width="0.6" height="15.0" fill="rgb(221,77,18)" rx="2" ry="2" />
+<text  x="780.63" y="143.5" ></text>
+</g>
+<g >
+<title>__isoc99_sscanf (217,238,267 samples, 0.37%)</title><rect x="1125.0" y="117" width="4.3" height="15.0" fill="rgb(236,146,35)" rx="2" ry="2" />
+<text  x="1127.96" y="127.5" ></text>
+</g>
+<g >
+<title>__pow (6,376,687 samples, 0.01%)</title><rect x="1189.7" y="405" width="0.2" height="15.0" fill="rgb(226,100,24)" rx="2" ry="2" />
+<text  x="1192.74" y="415.5" ></text>
+</g>
+<g >
+<title>nsvg__isdigit (20,085,697 samples, 0.03%)</title><rect x="1167.6" y="133" width="0.4" height="15.0" fill="rgb(216,53,12)" rx="2" ry="2" />
+<text  x="1170.60" y="143.5" ></text>
+</g>
+<g >
+<title>bool swift::RefCounts&lt;swift::RefCountBitsT&lt; (41,758,676 samples, 0.07%)</title><rect x="483.7" y="165" width="0.8" height="15.0" fill="rgb(226,96,23)" rx="2" ry="2" />
+<text  x="486.67" y="175.5" ></text>
+</g>
+<g >
+<title>min (944,624,893 samples, 1.60%)</title><rect x="879.0" y="229" width="18.9" height="15.0" fill="rgb(220,71,17)" rx="2" ry="2" />
+<text  x="881.95" y="239.5" ></text>
+</g>
+<g >
+<title>bool swift::RefCounts&lt;swift::RefCountBitsT&lt; (8,432,274 samples, 0.01%)</title><rect x="784.6" y="37" width="0.1" height="15.0" fill="rgb(226,96,23)" rx="2" ry="2" />
+<text  x="787.58" y="47.5" ></text>
+</g>
+<g >
+<title>?? (3,926,008,450 samples, 6.67%)</title><rect x="1011.1" y="213" width="78.7" height="15.0" fill="rgb(249,205,49)" rx="2" ry="2" />
+<text  x="1014.14" y="223.5" >??</text>
+</g>
+<g >
+<title>_dl_relocate_object (11,650,054 samples, 0.02%)</title><rect x="1177.5" y="341" width="0.2" height="15.0" fill="rgb(231,120,28)" rx="2" ry="2" />
+<text  x="1180.48" y="351.5" ></text>
+</g>
+<g >
+<title>nsvg__parseCoordinateRaw (9,414,272 samples, 0.02%)</title><rect x="1129.3" y="133" width="0.2" height="15.0" fill="rgb(231,122,29)" rx="2" ry="2" />
+<text  x="1132.32" y="143.5" ></text>
+</g>
+<g >
+<title>?? (53,654,180 samples, 0.09%)</title><rect x="764.4" y="165" width="1.0" height="15.0" fill="rgb(249,205,49)" rx="2" ry="2" />
+<text  x="767.36" y="175.5" ></text>
+</g>
+<g >
+<title>_swift_release_dealloc (25,158,284 samples, 0.04%)</title><rect x="484.0" y="149" width="0.5" height="15.0" fill="rgb(236,144,34)" rx="2" ry="2" />
+<text  x="486.98" y="159.5" ></text>
+</g>
+<g >
+<title>nsvg__createParser (11,536,025 samples, 0.02%)</title><rect x="1114.3" y="213" width="0.2" height="15.0" fill="rgb(236,145,34)" rx="2" ry="2" />
+<text  x="1117.29" y="223.5" ></text>
+</g>
+<g >
+<title>?? (10,526,226 samples, 0.02%)</title><rect x="154.4" y="181" width="0.2" height="15.0" fill="rgb(249,205,49)" rx="2" ry="2" />
+<text  x="157.39" y="191.5" ></text>
+</g>
+<g >
+<title>?? (336,486,428 samples, 0.57%)</title><rect x="942.3" y="165" width="6.7" height="15.0" fill="rgb(249,205,49)" rx="2" ry="2" />
+<text  x="945.30" y="175.5" ></text>
+</g>
+<g >
+<title>init (750,680,349 samples, 1.28%)</title><rect x="860.3" y="229" width="15.1" height="15.0" fill="rgb(247,193,46)" rx="2" ry="2" />
+<text  x="863.35" y="239.5" ></text>
+</g>
+<g >
+<title>next (182,903,885 samples, 0.31%)</title><rect x="762.9" y="213" width="3.6" height="15.0" fill="rgb(225,96,23)" rx="2" ry="2" />
+<text  x="765.87" y="223.5" ></text>
+</g>
+<g >
+<title>memmove@plt (9,397,158 samples, 0.02%)</title><rect x="481.0" y="149" width="0.2" height="15.0" fill="rgb(232,128,30)" rx="2" ry="2" />
+<text  x="484.00" y="159.5" ></text>
+</g>
+<g >
+<title>apply (31,644,568 samples, 0.05%)</title><rect x="765.9" y="181" width="0.6" height="15.0" fill="rgb(210,25,6)" rx="2" ry="2" />
+<text  x="768.90" y="191.5" ></text>
+</g>
+<g >
+<title>__libc_malloc (20,896,425 samples, 0.04%)</title><rect x="487.7" y="149" width="0.4" height="15.0" fill="rgb(241,166,39)" rx="2" ry="2" />
+<text  x="490.66" y="159.5" ></text>
+</g>
+<g >
+<title>__libc_free (13,634,025 samples, 0.02%)</title><rect x="759.6" y="133" width="0.2" height="15.0" fill="rgb(223,85,20)" rx="2" ry="2" />
+<text  x="762.57" y="143.5" ></text>
+</g>
+<g >
+<title>?? (20,976,816 samples, 0.04%)</title><rect x="962.3" y="197" width="0.4" height="15.0" fill="rgb(249,205,49)" rx="2" ry="2" />
+<text  x="965.28" y="207.5" ></text>
+</g>
+<g >
+<title>__libc_malloc2 (9,488,809 samples, 0.02%)</title><rect x="1130.3" y="149" width="0.2" height="15.0" fill="rgb(218,61,14)" rx="2" ry="2" />
+<text  x="1133.32" y="159.5" ></text>
+</g>
+<g >
+<title>__swift_instantiateCanonicalPrespecializedGenericMetadata (9,396,710 samples, 0.02%)</title><rect x="870.4" y="181" width="0.2" height="15.0" fill="rgb(226,96,23)" rx="2" ry="2" />
+<text  x="873.38" y="191.5" ></text>
+</g>
+<g >
+<title>run (51,136,177,001 samples, 86.87%)</title><rect x="152.4" y="309" width="1025.1" height="15.0" fill="rgb(210,26,6)" rx="2" ry="2" />
+<text  x="155.35" y="319.5" >run</text>
+</g>
+<g >
+<title>abs (9,287,378 samples, 0.02%)</title><rect x="776.8" y="117" width="0.2" height="15.0" fill="rgb(210,27,6)" rx="2" ry="2" />
+<text  x="779.83" y="127.5" ></text>
+</g>
+<g >
+<title>?? (1,179,309,269 samples, 2.00%)</title><rect x="938.6" y="197" width="23.7" height="15.0" fill="rgb(249,205,49)" rx="2" ry="2" />
+<text  x="941.64" y="207.5" >??</text>
+</g>
+<g >
+<title>__libc_malloc (10,537,904 samples, 0.02%)</title><rect x="484.8" y="133" width="0.2" height="15.0" fill="rgb(241,166,39)" rx="2" ry="2" />
+<text  x="487.80" y="143.5" ></text>
+</g>
+<g >
+<title>_swift_release_dealloc (6,252,541 samples, 0.01%)</title><rect x="1177.7" y="421" width="0.1" height="15.0" fill="rgb(236,144,34)" rx="2" ry="2" />
+<text  x="1180.72" y="431.5" ></text>
+</g>
+<g >
+<title>?? (134,521,101 samples, 0.23%)</title><rect x="451.6" y="149" width="2.7" height="15.0" fill="rgb(249,205,49)" rx="2" ry="2" />
+<text  x="454.58" y="159.5" ></text>
+</g>
+<g >
+<title>tcache_get_n (140,445,742 samples, 0.24%)</title><rect x="142.9" y="389" width="2.9" height="15.0" fill="rgb(229,110,26)" rx="2" ry="2" />
+<text  x="145.94" y="399.5" ></text>
+</g>
+<g >
+<title>nsvg__addPath (332,552,488 samples, 0.56%)</title><rect x="1132.0" y="149" width="6.7" height="15.0" fill="rgb(221,77,18)" rx="2" ry="2" />
+<text  x="1135.01" y="159.5" ></text>
+</g>
+<g >
+<title>_swift_release_dealloc (5,280,899 samples, 0.01%)</title><rect x="779.9" y="37" width="0.1" height="15.0" fill="rgb(236,144,34)" rx="2" ry="2" />
+<text  x="782.94" y="47.5" ></text>
+</g>
+<g >
+<title>?? (51,216,779 samples, 0.09%)</title><rect x="779.1" y="101" width="1.0" height="15.0" fill="rgb(249,205,49)" rx="2" ry="2" />
+<text  x="782.08" y="111.5" ></text>
+</g>
+<g >
+<title>nsvgParseFromFile (3,081,132,923 samples, 5.23%)</title><rect x="1113.9" y="245" width="61.7" height="15.0" fill="rgb(216,54,13)" rx="2" ry="2" />
+<text  x="1116.87" y="255.5" >nsvgPa..</text>
+</g>
+<g >
+<title>nsvg__scaleToViewbox (24,091,312 samples, 0.04%)</title><rect x="1175.2" y="213" width="0.4" height="15.0" fill="rgb(205,4,1)" rx="2" ry="2" />
+<text  x="1178.16" y="223.5" ></text>
+</g>
+<g >
+<title>walk (929,991,745 samples, 1.58%)</title><rect x="770.4" y="165" width="18.7" height="15.0" fill="rgb(229,111,26)" rx="2" ry="2" />
+<text  x="773.44" y="175.5" ></text>
+</g>
+<g >
+<title>nsvg__addPath (11,686,240 samples, 0.02%)</title><rect x="1129.9" y="165" width="0.3" height="15.0" fill="rgb(221,77,18)" rx="2" ry="2" />
+<text  x="1132.92" y="175.5" ></text>
+</g>
+<g >
+<title>?? (693,684,314 samples, 1.18%)</title><rect x="884.0" y="213" width="13.9" height="15.0" fill="rgb(249,205,49)" rx="2" ry="2" />
+<text  x="886.98" y="223.5" ></text>
+</g>
+<g >
+<title>__malloc_usable_size (6,336,763 samples, 0.01%)</title><rect x="765.0" y="117" width="0.2" height="15.0" fill="rgb(205,4,1)" rx="2" ry="2" />
+<text  x="768.04" y="127.5" ></text>
+</g>
+<g >
+<title>getCache (22,131,364 samples, 0.04%)</title><rect x="872.3" y="165" width="0.4" height="15.0" fill="rgb(223,83,19)" rx="2" ry="2" />
+<text  x="875.29" y="175.5" ></text>
+</g>
+<g >
+<title>__memmove_avx_unaligned_erms (7,249,541 samples, 0.01%)</title><rect x="764.8" y="117" width="0.2" height="15.0" fill="rgb(205,0,0)" rx="2" ry="2" />
+<text  x="767.83" y="127.5" ></text>
+</g>
+<g >
+<title>?? (13,634,735 samples, 0.02%)</title><rect x="787.5" y="53" width="0.3" height="15.0" fill="rgb(249,205,49)" rx="2" ry="2" />
+<text  x="790.53" y="63.5" ></text>
+</g>
+<g >
+<title>?? (15,746,790 samples, 0.03%)</title><rect x="767.5" y="149" width="0.3" height="15.0" fill="rgb(249,205,49)" rx="2" ry="2" />
+<text  x="770.50" y="159.5" ></text>
+</g>
+<g >
+<title>?? (90,367,968 samples, 0.15%)</title><rect x="763.6" y="181" width="1.8" height="15.0" fill="rgb(249,205,49)" rx="2" ry="2" />
+<text  x="766.63" y="191.5" ></text>
+</g>
+<g >
+<title>_IO_strfile_read (13,547,495 samples, 0.02%)</title><rect x="1125.1" y="101" width="0.3" height="15.0" fill="rgb(213,37,8)" rx="2" ry="2" />
+<text  x="1128.09" y="111.5" ></text>
+</g>
+<g >
+<title>__derived_struct_equals (16,895,560 samples, 0.03%)</title><rect x="766.1" y="149" width="0.3" height="15.0" fill="rgb(206,5,1)" rx="2" ry="2" />
+<text  x="769.09" y="159.5" ></text>
+</g>
+<g >
+<title>nsvg__isdigit (6,335,685 samples, 0.01%)</title><rect x="1172.6" y="133" width="0.1" height="15.0" fill="rgb(216,53,12)" rx="2" ry="2" />
+<text  x="1175.56" y="143.5" ></text>
+</g>
+<g >
+<title>nsvg__isspace (17,959,756 samples, 0.03%)</title><rect x="1122.6" y="181" width="0.3" height="15.0" fill="rgb(248,201,48)" rx="2" ry="2" />
+<text  x="1125.58" y="191.5" ></text>
+</g>
+<g >
+<title>__vfscanf_internal (197,405,046 samples, 0.34%)</title><rect x="1125.4" y="101" width="3.9" height="15.0" fill="rgb(210,26,6)" rx="2" ry="2" />
+<text  x="1128.36" y="111.5" ></text>
+</g>
+<g >
+<title>Swift.Int._rawHashValue(seed: Swift.Int) -&gt; Swift.Int (47,257,670 samples, 0.08%)</title><rect x="869.3" y="181" width="1.0" height="15.0" fill="rgb(213,37,8)" rx="2" ry="2" />
+<text  x="872.34" y="191.5" ></text>
+</g>
+<g >
+<title>nsvg__getNextPathItem (199,774,528 samples, 0.34%)</title><rect x="1168.3" y="149" width="4.1" height="15.0" fill="rgb(214,45,10)" rx="2" ry="2" />
+<text  x="1171.35" y="159.5" ></text>
+</g>
+<g >
+<title>?? (42,091,761 samples, 0.07%)</title><rect x="764.5" y="149" width="0.9" height="15.0" fill="rgb(249,205,49)" rx="2" ry="2" />
+<text  x="767.53" y="159.5" ></text>
+</g>
+<g >
+<title>?? (269,116,726 samples, 0.46%)</title><rect x="943.6" y="149" width="5.4" height="15.0" fill="rgb(249,205,49)" rx="2" ry="2" />
+<text  x="946.63" y="159.5" ></text>
+</g>
+<g >
+<title>__libc_malloc2 (46,303,502 samples, 0.08%)</title><rect x="488.1" y="149" width="0.9" height="15.0" fill="rgb(218,61,14)" rx="2" ry="2" />
+<text  x="491.08" y="159.5" ></text>
+</g>
+<g >
+<title>swift_release@plt (11,537,297 samples, 0.02%)</title><rect x="489.5" y="181" width="0.2" height="15.0" fill="rgb(206,8,1)" rx="2" ry="2" />
+<text  x="492.45" y="191.5" ></text>
+</g>
+<g >
+<title>?? (35,774,457 samples, 0.06%)</title><rect x="769.4" y="149" width="0.7" height="15.0" fill="rgb(249,205,49)" rx="2" ry="2" />
+<text  x="772.42" y="159.5" ></text>
+</g>
+<g >
+<title>compositeChannel (2,165,018,525 samples, 3.68%)</title><rect x="714.4" y="213" width="43.4" height="15.0" fill="rgb(236,146,34)" rx="2" ry="2" />
+<text  x="717.38" y="223.5" >comp..</text>
+</g>
+<g >
+<title>nsvg__atof (1,470,353,986 samples, 2.50%)</title><rect x="1138.7" y="149" width="29.5" height="15.0" fill="rgb(253,221,52)" rx="2" ry="2" />
+<text  x="1141.68" y="159.5" >ns..</text>
+</g>
+<g >
+<title>?? (25,229,320 samples, 0.04%)</title><rect x="868.8" y="149" width="0.5" height="15.0" fill="rgb(249,205,49)" rx="2" ry="2" />
+<text  x="871.84" y="159.5" ></text>
+</g>
+<g >
+<title>swift_slowAlloc (19,002,443 samples, 0.03%)</title><rect x="874.8" y="165" width="0.4" height="15.0" fill="rgb(253,223,53)" rx="2" ry="2" />
+<text  x="877.81" y="175.5" ></text>
+</g>
+<g >
+<title>?? (56,579,280 samples, 0.10%)</title><rect x="153.9" y="229" width="1.1" height="15.0" fill="rgb(249,205,49)" rx="2" ry="2" />
+<text  x="156.89" y="239.5" ></text>
+</g>
+<g >
+<title>__floorf_sse41 (28,252,897 samples, 0.05%)</title><rect x="1113.0" y="213" width="0.5" height="15.0" fill="rgb(245,187,44)" rx="2" ry="2" />
+<text  x="1115.97" y="223.5" ></text>
+</g>
+<g >
+<title>[unknown] (17,473,991 samples, 0.03%)</title><rect x="714.0" y="133" width="0.4" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="717.03" y="143.5" ></text>
+</g>
+<g >
+<title>elf_machine_rela (10,503,556 samples, 0.02%)</title><rect x="1177.5" y="293" width="0.2" height="15.0" fill="rgb(230,117,28)" rx="2" ry="2" />
+<text  x="1180.49" y="303.5" ></text>
+</g>
+<g >
+<title>_IO_str_underflow (5,231,114 samples, 0.01%)</title><rect x="1128.0" y="69" width="0.1" height="15.0" fill="rgb(218,61,14)" rx="2" ry="2" />
+<text  x="1131.03" y="79.5" ></text>
+</g>
+<g >
+<title>_dl_sysdep_start (12,989,585 samples, 0.02%)</title><rect x="1177.5" y="373" width="0.2" height="15.0" fill="rgb(234,137,32)" rx="2" ry="2" />
+<text  x="1180.46" y="383.5" ></text>
+</g>
+<g >
+<title>benchSvg (51,135,146,004 samples, 86.87%)</title><rect x="152.4" y="277" width="1025.0" height="15.0" fill="rgb(242,171,41)" rx="2" ry="2" />
+<text  x="155.35" y="287.5" >benchSvg</text>
+</g>
+<g >
+<title>subscript.get (14,758,946 samples, 0.03%)</title><rect x="770.1" y="165" width="0.3" height="15.0" fill="rgb(247,195,46)" rx="2" ry="2" />
+<text  x="773.14" y="175.5" ></text>
+</g>
+<g >
+<title>?? (64,109,946 samples, 0.11%)</title><rect x="466.7" y="133" width="1.2" height="15.0" fill="rgb(249,205,49)" rx="2" ry="2" />
+<text  x="469.66" y="143.5" ></text>
+</g>
+<g >
+<title>[unknown] (46,679,565 samples, 0.08%)</title><rect x="713.4" y="197" width="1.0" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="716.45" y="207.5" ></text>
+</g>
+<g >
+<title>Swift._ContiguousArrayStorage.__deallocating_deinit (8,203,944 samples, 0.01%)</title><rect x="483.8" y="149" width="0.2" height="15.0" fill="rgb(241,167,40)" rx="2" ry="2" />
+<text  x="486.82" y="159.5" ></text>
+</g>
+<g >
+<title>next (1,941,028,169 samples, 3.30%)</title><rect x="899.0" y="229" width="38.9" height="15.0" fill="rgb(225,96,23)" rx="2" ry="2" />
+<text  x="902.01" y="239.5" >next</text>
+</g>
+<g >
+<title>tcache_get_n (8,415,737 samples, 0.01%)</title><rect x="485.4" y="101" width="0.1" height="15.0" fill="rgb(229,110,26)" rx="2" ry="2" />
+<text  x="488.36" y="111.5" ></text>
+</g>
+<g >
+<title>?? (30,513,234 samples, 0.05%)</title><rect x="769.5" y="133" width="0.6" height="15.0" fill="rgb(249,205,49)" rx="2" ry="2" />
+<text  x="772.53" y="143.5" ></text>
+</g>
+<g >
+<title>?? (21,228,802 samples, 0.04%)</title><rect x="775.1" y="85" width="0.4" height="15.0" fill="rgb(249,205,49)" rx="2" ry="2" />
+<text  x="778.08" y="95.5" ></text>
+</g>
+<g >
+<title>__malloc_usable_size (77,825,473 samples, 0.13%)</title><rect x="485.8" y="165" width="1.6" height="15.0" fill="rgb(205,4,1)" rx="2" ry="2" />
+<text  x="488.81" y="175.5" ></text>
+</g>
+<g >
+<title>tcache_put (33,649,331 samples, 0.06%)</title><rect x="127.2" y="405" width="0.7" height="15.0" fill="rgb(241,169,40)" rx="2" ry="2" />
+<text  x="130.20" y="415.5" ></text>
+</g>
+<g >
+<title>nsvg__parseColor (222,321,258 samples, 0.38%)</title><rect x="1124.9" y="149" width="4.4" height="15.0" fill="rgb(222,79,18)" rx="2" ry="2" />
+<text  x="1127.86" y="159.5" ></text>
+</g>
+<g >
+<title>tcache_put_n (5,242,891 samples, 0.01%)</title><rect x="142.0" y="373" width="0.1" height="15.0" fill="rgb(217,58,13)" rx="2" ry="2" />
+<text  x="145.04" y="383.5" ></text>
+</g>
+<g >
+<title>[unknown] (39,315,352 samples, 0.07%)</title><rect x="713.6" y="181" width="0.8" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="716.59" y="191.5" ></text>
+</g>
+<g >
+<title>__strlen_avx2 (5,243,003 samples, 0.01%)</title><rect x="1125.3" y="69" width="0.1" height="15.0" fill="rgb(246,188,45)" rx="2" ry="2" />
+<text  x="1128.25" y="79.5" ></text>
+</g>
+<g >
+<title>bool swift::RefCounts&lt;swift::RefCountBitsT&lt; (16,851,101 samples, 0.03%)</title><rect x="767.2" y="197" width="0.3" height="15.0" fill="rgb(226,96,23)" rx="2" ry="2" />
+<text  x="770.17" y="207.5" ></text>
+</g>
+<g >
+<title>__floorf_sse41 (94,028,631 samples, 0.16%)</title><rect x="463.7" y="133" width="1.9" height="15.0" fill="rgb(245,187,44)" rx="2" ry="2" />
+<text  x="466.68" y="143.5" ></text>
+</g>
+<g >
+<title>walk (746,821,248 samples, 1.27%)</title><rect x="774.1" y="149" width="15.0" height="15.0" fill="rgb(229,111,26)" rx="2" ry="2" />
+<text  x="777.11" y="159.5" ></text>
+</g>
+<g >
+<title>abs (10,379,615 samples, 0.02%)</title><rect x="773.0" y="133" width="0.2" height="15.0" fill="rgb(210,27,6)" rx="2" ry="2" />
+<text  x="775.97" y="143.5" ></text>
+</g>
+<g >
+<title>memcpy@plt (8,343,578 samples, 0.01%)</title><rect x="484.6" y="165" width="0.2" height="15.0" fill="rgb(224,88,21)" rx="2" ry="2" />
+<text  x="487.59" y="175.5" ></text>
+</g>
+<g >
+<title>walk (7,309,207 samples, 0.01%)</title><rect x="788.9" y="85" width="0.2" height="15.0" fill="rgb(229,111,26)" rx="2" ry="2" />
+<text  x="791.93" y="95.5" ></text>
+</g>
+<g >
+<title>musable (5,296,932 samples, 0.01%)</title><rect x="765.1" y="101" width="0.1" height="15.0" fill="rgb(250,211,50)" rx="2" ry="2" />
+<text  x="768.06" y="111.5" ></text>
+</g>
+<g >
+<title>split (14,777,381 samples, 0.03%)</title><rect x="773.8" y="149" width="0.3" height="15.0" fill="rgb(221,77,18)" rx="2" ry="2" />
+<text  x="776.81" y="159.5" ></text>
+</g>
+<g >
+<title>top12 (56,909,478 samples, 0.10%)</title><rect x="1159.5" y="85" width="1.2" height="15.0" fill="rgb(234,133,32)" rx="2" ry="2" />
+<text  x="1162.54" y="95.5" ></text>
+</g>
+<g >
+<title>bool swift::RefCounts&lt;swift::RefCountBitsT&lt; (6,326,731 samples, 0.01%)</title><rect x="765.2" y="133" width="0.1" height="15.0" fill="rgb(226,96,23)" rx="2" ry="2" />
+<text  x="768.16" y="143.5" ></text>
+</g>
+<g >
+<title>subscript.get (282,080,251 samples, 0.48%)</title><rect x="1179.0" y="405" width="5.7" height="15.0" fill="rgb(247,195,46)" rx="2" ry="2" />
+<text  x="1182.03" y="415.5" ></text>
+</g>
+<g >
+<title>split (14,668,590 samples, 0.02%)</title><rect x="787.1" y="101" width="0.3" height="15.0" fill="rgb(221,77,18)" rx="2" ry="2" />
+<text  x="790.06" y="111.5" ></text>
+</g>
+<g >
+<title>?? (371,158,940 samples, 0.63%)</title><rect x="997.1" y="181" width="7.4" height="15.0" fill="rgb(249,205,49)" rx="2" ry="2" />
+<text  x="1000.05" y="191.5" ></text>
+</g>
+<g >
+<title>blend (13,339,177,822 samples, 22.66%)</title><rect x="490.4" y="229" width="267.4" height="15.0" fill="rgb(223,86,20)" rx="2" ry="2" />
+<text  x="493.38" y="239.5" >blend</text>
+</g>
+<g >
+<title>_IO_default_uflow (7,255,435 samples, 0.01%)</title><rect x="1128.0" y="85" width="0.1" height="15.0" fill="rgb(205,2,0)" rx="2" ry="2" />
+<text  x="1130.99" y="95.5" ></text>
+</g>
+<g >
+<title>memset@plt (10,544,756 samples, 0.02%)</title><rect x="1089.6" y="197" width="0.2" height="15.0" fill="rgb(224,88,21)" rx="2" ry="2" />
+<text  x="1092.63" y="207.5" ></text>
+</g>
+<g >
+<title>swift_allocObject (38,658,668 samples, 0.07%)</title><rect x="484.8" y="165" width="0.7" height="15.0" fill="rgb(253,224,53)" rx="2" ry="2" />
+<text  x="487.76" y="175.5" ></text>
+</g>
+<g >
+<title>nsvg__minf (33,914,231 samples, 0.06%)</title><rect x="1137.7" y="133" width="0.7" height="15.0" fill="rgb(253,221,52)" rx="2" ry="2" />
+<text  x="1140.75" y="143.5" ></text>
+</g>
+<g >
+<title>?? (22,232,589 samples, 0.04%)</title><rect x="775.1" y="101" width="0.4" height="15.0" fill="rgb(249,205,49)" rx="2" ry="2" />
+<text  x="778.06" y="111.5" ></text>
+</g>
+<g >
+<title>swift::MetadataCacheKey::operator== (9,472,098 samples, 0.02%)</title><rect x="873.3" y="149" width="0.1" height="15.0" fill="rgb(253,223,53)" rx="2" ry="2" />
+<text  x="876.25" y="159.5" ></text>
+</g>
+<g >
+<title>?? (1,175,486,940 samples, 2.00%)</title><rect x="444.4" y="197" width="23.5" height="15.0" fill="rgb(249,205,49)" rx="2" ry="2" />
+<text  x="447.38" y="207.5" >??</text>
+</g>
+<g >
+<title>lerp (174,754,366 samples, 0.30%)</title><rect x="856.8" y="197" width="3.5" height="15.0" fill="rgb(253,223,53)" rx="2" ry="2" />
+<text  x="859.84" y="207.5" ></text>
+</g>
+<g >
+<title>_int_free_merge_chunk (5,118,421 samples, 0.01%)</title><rect x="762.5" y="181" width="0.1" height="15.0" fill="rgb(240,163,39)" rx="2" ry="2" />
+<text  x="765.47" y="191.5" ></text>
+</g>
+<g >
+<title>?? (43,185,681 samples, 0.07%)</title><rect x="898.1" y="213" width="0.9" height="15.0" fill="rgb(249,205,49)" rx="2" ry="2" />
+<text  x="901.14" y="223.5" ></text>
+</g>
+<g >
+<title>__libc_malloc (16,849,301 samples, 0.03%)</title><rect x="874.8" y="149" width="0.4" height="15.0" fill="rgb(241,166,39)" rx="2" ry="2" />
+<text  x="877.85" y="159.5" ></text>
+</g>
+<g >
+<title>swift_isUniquelyReferenced_nonNull_native@plt (6,369,470 samples, 0.01%)</title><rect x="898.9" y="197" width="0.1" height="15.0" fill="rgb(209,22,5)" rx="2" ry="2" />
+<text  x="901.88" y="207.5" ></text>
+</g>
+<g >
+<title>Swift.Int._rawHashValue(seed: Swift.Int) -&gt; Swift.Int (33,697,392 samples, 0.06%)</title><rect x="1003.7" y="149" width="0.7" height="15.0" fill="rgb(213,37,8)" rx="2" ry="2" />
+<text  x="1006.69" y="159.5" ></text>
+</g>
+<g >
+<title>?? (239,146,886 samples, 0.41%)</title><rect x="1184.7" y="389" width="4.8" height="15.0" fill="rgb(249,205,49)" rx="2" ry="2" />
+<text  x="1187.68" y="399.5" ></text>
+</g>
+<g >
+<title>subscript.modify (239,146,886 samples, 0.41%)</title><rect x="1184.7" y="405" width="4.8" height="15.0" fill="rgb(228,108,25)" rx="2" ry="2" />
+<text  x="1187.68" y="415.5" ></text>
+</g>
+<g >
+<title>max (51,354,082 samples, 0.09%)</title><rect x="851.6" y="197" width="1.1" height="15.0" fill="rgb(207,12,2)" rx="2" ry="2" />
+<text  x="854.65" y="207.5" ></text>
+</g>
+<g >
+<title>max (20,996,443 samples, 0.04%)</title><rect x="777.2" y="117" width="0.4" height="15.0" fill="rgb(207,12,2)" rx="2" ry="2" />
+<text  x="780.21" y="127.5" ></text>
+</g>
+<g >
+<title>std::pair&lt;swift::GenericCacheEntry*, bool&gt; swift::StableAddressConcurrentReadableHashMap&lt;swift::GenericCacheEntry, swift::TaggedMetadataAllocator&lt; (15,567,520 samples, 0.03%)</title><rect x="872.8" y="149" width="0.3" height="15.0" fill="rgb(217,55,13)" rx="2" ry="2" />
+<text  x="875.84" y="159.5" ></text>
+</g>
+<g >
+<title>?? (768,298,690 samples, 1.31%)</title><rect x="992.7" y="197" width="15.4" height="15.0" fill="rgb(249,205,49)" rx="2" ry="2" />
+<text  x="995.69" y="207.5" ></text>
+</g>
+<g >
+<title>static Swift.Hasher._hash(seed: Swift.Int, _: Swift.UInt64) -&gt; Swift.Int (20,075,810 samples, 0.03%)</title><rect x="1008.2" y="213" width="0.4" height="15.0" fill="rgb(229,113,27)" rx="2" ry="2" />
+<text  x="1011.15" y="223.5" ></text>
+</g>
+<g >
+<title>swift_release (7,317,718 samples, 0.01%)</title><rect x="489.9" y="197" width="0.2" height="15.0" fill="rgb(240,164,39)" rx="2" ry="2" />
+<text  x="492.94" y="207.5" ></text>
+</g>
+<g >
+<title>merged function signature specialization &lt;Arg[2] = Dead&gt; of static Swift.Hasher._hash(seed: Swift.Int, _: Swift.UInt64) -&gt; Swift.Int (47,257,670 samples, 0.08%)</title><rect x="869.3" y="165" width="1.0" height="15.0" fill="rgb(216,52,12)" rx="2" ry="2" />
+<text  x="872.34" y="175.5" ></text>
+</g>
+<g >
+<title>walk (282,181,634 samples, 0.48%)</title><rect x="783.4" y="117" width="5.7" height="15.0" fill="rgb(229,111,26)" rx="2" ry="2" />
+<text  x="786.42" y="127.5" ></text>
+</g>
+<g >
+<title>append (1,086,291,084 samples, 1.85%)</title><rect x="468.6" y="229" width="21.8" height="15.0" fill="rgb(230,119,28)" rx="2" ry="2" />
+<text  x="471.60" y="239.5" >a..</text>
+</g>
+<g >
+<title>_int_free_chunk (6,166,649 samples, 0.01%)</title><rect x="762.5" y="197" width="0.1" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="765.45" y="207.5" ></text>
+</g>
+<g >
+<title>Swift._ContiguousArrayStorage.__deallocating_deinit (6,331,400 samples, 0.01%)</title><rect x="758.2" y="197" width="0.2" height="15.0" fill="rgb(241,167,40)" rx="2" ry="2" />
+<text  x="761.22" y="207.5" ></text>
+</g>
+<g >
+<title>swift_release_n (13,698,111 samples, 0.02%)</title><rect x="1009.2" y="229" width="0.3" height="15.0" fill="rgb(216,52,12)" rx="2" ry="2" />
+<text  x="1012.23" y="239.5" ></text>
+</g>
+<g >
+<title>swift_deallocObject (5,217,305 samples, 0.01%)</title><rect x="1177.7" y="405" width="0.1" height="15.0" fill="rgb(205,1,0)" rx="2" ry="2" />
+<text  x="1180.74" y="415.5" ></text>
+</g>
+<g >
+<title>__strcmp_avx2 (6,325,612 samples, 0.01%)</title><rect x="1172.8" y="133" width="0.1" height="15.0" fill="rgb(239,159,38)" rx="2" ry="2" />
+<text  x="1175.75" y="143.5" ></text>
+</g>
+<g >
+<title>_int_malloc (14,524,588 samples, 0.02%)</title><rect x="485.1" y="117" width="0.3" height="15.0" fill="rgb(215,47,11)" rx="2" ry="2" />
+<text  x="488.07" y="127.5" ></text>
+</g>
+<g >
+<title>Swift._ContiguousArrayStorage.__deallocating_deinit (5,220,171 samples, 0.01%)</title><rect x="767.3" y="165" width="0.1" height="15.0" fill="rgb(241,167,40)" rx="2" ry="2" />
+<text  x="770.34" y="175.5" ></text>
+</g>
+<g >
+<title>swift_release@plt (6,371,193 samples, 0.01%)</title><rect x="1009.1" y="229" width="0.1" height="15.0" fill="rgb(206,8,1)" rx="2" ry="2" />
+<text  x="1012.10" y="239.5" ></text>
+</g>
+<g >
+<title>?? (67,216,186 samples, 0.11%)</title><rect x="954.0" y="149" width="1.3" height="15.0" fill="rgb(249,205,49)" rx="2" ry="2" />
+<text  x="956.99" y="159.5" ></text>
+</g>
+<g >
+<title>swift_allocObject (7,353,692 samples, 0.01%)</title><rect x="870.6" y="181" width="0.1" height="15.0" fill="rgb(253,224,53)" rx="2" ry="2" />
+<text  x="873.56" y="191.5" ></text>
+</g>
+<g >
+<title>__libc_malloc2 (17,615,077 samples, 0.03%)</title><rect x="485.0" y="133" width="0.4" height="15.0" fill="rgb(218,61,14)" rx="2" ry="2" />
+<text  x="488.01" y="143.5" ></text>
+</g>
+<g >
+<title>?? (282,080,251 samples, 0.48%)</title><rect x="1179.0" y="389" width="5.7" height="15.0" fill="rgb(249,205,49)" rx="2" ry="2" />
+<text  x="1182.03" y="399.5" ></text>
+</g>
+<g >
+<title>_allocateUninitializedArray (7,262,566 samples, 0.01%)</title><rect x="768.2" y="181" width="0.2" height="15.0" fill="rgb(248,199,47)" rx="2" ry="2" />
+<text  x="771.22" y="191.5" ></text>
+</g>
+<g >
+<title>__memmove_avx_unaligned_erms (12,628,075 samples, 0.02%)</title><rect x="1174.9" y="149" width="0.3" height="15.0" fill="rgb(205,0,0)" rx="2" ry="2" />
+<text  x="1177.90" y="159.5" ></text>
+</g>
+<g >
+<title>Swift.Int._rawHashValue(seed: Swift.Int) -&gt; Swift.Int (61,933,225 samples, 0.11%)</title><rect x="954.1" y="133" width="1.2" height="15.0" fill="rgb(213,37,8)" rx="2" ry="2" />
+<text  x="957.07" y="143.5" ></text>
+</g>
+<g >
+<title>musable (36,803,128 samples, 0.06%)</title><rect x="482.9" y="133" width="0.8" height="15.0" fill="rgb(250,211,50)" rx="2" ry="2" />
+<text  x="485.93" y="143.5" ></text>
+</g>
+<g >
+<title>?? (37,942,473 samples, 0.06%)</title><rect x="774.7" y="117" width="0.8" height="15.0" fill="rgb(249,205,49)" rx="2" ry="2" />
+<text  x="777.74" y="127.5" ></text>
+</g>
+<g >
+<title>?? (10,379,615 samples, 0.02%)</title><rect x="773.0" y="117" width="0.2" height="15.0" fill="rgb(249,205,49)" rx="2" ry="2" />
+<text  x="775.97" y="127.5" ></text>
+</g>
+<g >
+<title>__memmove_avx_unaligned_erms (10,526,226 samples, 0.02%)</title><rect x="154.4" y="165" width="0.2" height="15.0" fill="rgb(205,0,0)" rx="2" ry="2" />
+<text  x="157.39" y="175.5" ></text>
+</g>
+<g >
+<title>asuint64 (56,909,478 samples, 0.10%)</title><rect x="1159.5" y="69" width="1.2" height="15.0" fill="rgb(215,47,11)" rx="2" ry="2" />
+<text  x="1162.54" y="79.5" ></text>
+</g>
+<g >
+<title>run (51,136,177,001 samples, 86.87%)</title><rect x="152.4" y="293" width="1025.1" height="15.0" fill="rgb(210,26,6)" rx="2" ry="2" />
+<text  x="155.35" y="303.5" >run</text>
+</g>
+<g >
+<title>[unknown] (6,261,724 samples, 0.01%)</title><rect x="468.5" y="229" width="0.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="471.45" y="239.5" ></text>
+</g>
+<g >
+<title>writeFlattened (929,991,745 samples, 1.58%)</title><rect x="770.4" y="181" width="18.7" height="15.0" fill="rgb(241,168,40)" rx="2" ry="2" />
+<text  x="773.44" y="191.5" ></text>
+</g>
+<g >
+<title>?? (1,918,965,373 samples, 3.26%)</title><rect x="899.5" y="197" width="38.4" height="15.0" fill="rgb(249,205,49)" rx="2" ry="2" />
+<text  x="902.45" y="207.5" >??</text>
+</g>
+<g >
+<title>static Swift.Hasher._hash(seed: Swift.Int, _: Swift.UInt64) -&gt; Swift.Int (24,286,211 samples, 0.04%)</title><rect x="1175.6" y="245" width="0.5" height="15.0" fill="rgb(229,113,27)" rx="2" ry="2" />
+<text  x="1178.64" y="255.5" ></text>
+</g>
+<g >
+<title>next (42,076,078 samples, 0.07%)</title><rect x="769.3" y="165" width="0.8" height="15.0" fill="rgb(225,96,23)" rx="2" ry="2" />
+<text  x="772.30" y="175.5" ></text>
+</g>
+<g >
+<title>_swift_stdlib_malloc_size (7,404,206 samples, 0.01%)</title><rect x="765.0" y="133" width="0.2" height="15.0" fill="rgb(219,64,15)" rx="2" ry="2" />
+<text  x="768.02" y="143.5" ></text>
+</g>
+<g >
+<title>tcache_get (140,445,742 samples, 0.24%)</title><rect x="142.9" y="405" width="2.9" height="15.0" fill="rgb(253,222,53)" rx="2" ry="2" />
+<text  x="145.94" y="415.5" ></text>
+</g>
+<g >
+<title>merged function signature specialization &lt;Arg[2] = Dead&gt; of static Swift.Hasher._hash(seed: Swift.Int, _: Swift.UInt64) -&gt; Swift.Int (45,096,135 samples, 0.08%)</title><rect x="961.4" y="133" width="0.9" height="15.0" fill="rgb(216,52,12)" rx="2" ry="2" />
+<text  x="964.35" y="143.5" ></text>
+</g>
+<g >
+<title>merged function signature specialization &lt;Arg[2] = Dead&gt; of static Swift.Hasher._hash(seed: Swift.Int, _: Swift.UInt64) -&gt; Swift.Int (83,106,883 samples, 0.14%)</title><rect x="978.0" y="165" width="1.7" height="15.0" fill="rgb(216,52,12)" rx="2" ry="2" />
+<text  x="980.99" y="175.5" ></text>
+</g>
+<g >
+<title>_swift_stdlib_malloc_size (39,990,295 samples, 0.07%)</title><rect x="482.9" y="165" width="0.8" height="15.0" fill="rgb(219,64,15)" rx="2" ry="2" />
+<text  x="485.87" y="175.5" ></text>
+</g>
+<g >
+<title>Swift._ContiguousArrayStorage.__deallocating_deinit (11,604,558 samples, 0.02%)</title><rect x="484.0" y="133" width="0.3" height="15.0" fill="rgb(241,167,40)" rx="2" ry="2" />
+<text  x="487.02" y="143.5" ></text>
+</g>
+<g >
+<title>exp_inline (360,823,889 samples, 0.61%)</title><rect x="1153.4" y="101" width="7.3" height="15.0" fill="rgb(220,72,17)" rx="2" ry="2" />
+<text  x="1156.45" y="111.5" ></text>
+</g>
+<g >
+<title>cross (12,719,515 samples, 0.02%)</title><rect x="773.2" y="133" width="0.2" height="15.0" fill="rgb(234,136,32)" rx="2" ry="2" />
+<text  x="776.18" y="143.5" ></text>
+</g>
+<g >
+<title>?? (1,219,543,690 samples, 2.07%)</title><rect x="444.0" y="213" width="24.5" height="15.0" fill="rgb(249,205,49)" rx="2" ry="2" />
+<text  x="447.01" y="223.5" >??</text>
+</g>
+<g >
+<title>__libc_malloc2 (9,483,298 samples, 0.02%)</title><rect x="1132.6" y="133" width="0.2" height="15.0" fill="rgb(218,61,14)" rx="2" ry="2" />
+<text  x="1135.58" y="143.5" ></text>
+</g>
+<g >
+<title>__libc_free (168,150,136 samples, 0.29%)</title><rect x="124.5" y="421" width="3.4" height="15.0" fill="rgb(223,85,20)" rx="2" ry="2" />
+<text  x="127.51" y="431.5" ></text>
+</g>
+<g >
+<title>[unknown] (65,233,976 samples, 0.11%)</title><rect x="713.1" y="213" width="1.3" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="716.07" y="223.5" ></text>
+</g>
+<g >
+<title>elf_dynamic_do_Rela (11,650,054 samples, 0.02%)</title><rect x="1177.5" y="309" width="0.2" height="15.0" fill="rgb(207,10,2)" rx="2" ry="2" />
+<text  x="1180.48" y="319.5" ></text>
+</g>
+<g >
+<title>_int_malloc (8,453,201 samples, 0.01%)</title><rect x="1007.5" y="117" width="0.1" height="15.0" fill="rgb(215,47,11)" rx="2" ry="2" />
+<text  x="1010.48" y="127.5" ></text>
+</g>
+<g >
+<title>nsvg__lineTo (7,414,454 samples, 0.01%)</title><rect x="1137.6" y="133" width="0.1" height="15.0" fill="rgb(206,6,1)" rx="2" ry="2" />
+<text  x="1140.60" y="143.5" ></text>
+</g>
+<g >
+<title>?? (14,758,946 samples, 0.03%)</title><rect x="770.1" y="149" width="0.3" height="15.0" fill="rgb(249,205,49)" rx="2" ry="2" />
+<text  x="773.14" y="159.5" ></text>
+</g>
+<g >
+<title>max (25,287,188 samples, 0.04%)</title><rect x="786.6" y="85" width="0.5" height="15.0" fill="rgb(207,12,2)" rx="2" ry="2" />
+<text  x="789.56" y="95.5" ></text>
+</g>
+<g >
+<title>max (80,827,951 samples, 0.14%)</title><rect x="877.3" y="229" width="1.7" height="15.0" fill="rgb(207,12,2)" rx="2" ry="2" />
+<text  x="880.33" y="239.5" ></text>
+</g>
+<g >
+<title>[unknown] (6,270,531 samples, 0.01%)</title><rect x="124.1" y="421" width="0.2" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="127.15" y="431.5" ></text>
+</g>
+<g >
+<title>nsvg__addShape (21,003,765 samples, 0.04%)</title><rect x="1130.2" y="165" width="0.4" height="15.0" fill="rgb(225,96,22)" rx="2" ry="2" />
+<text  x="1133.16" y="175.5" ></text>
+</g>
+<g >
+<title>?? (351,025,613 samples, 0.60%)</title><rect x="478.6" y="181" width="7.0" height="15.0" fill="rgb(249,205,49)" rx="2" ry="2" />
+<text  x="481.58" y="191.5" ></text>
+</g>
+<g >
+<title>?? (23,018,962 samples, 0.04%)</title><rect x="962.7" y="197" width="0.5" height="15.0" fill="rgb(249,205,49)" rx="2" ry="2" />
+<text  x="965.70" y="207.5" ></text>
+</g>
+<g >
+<title>merged static Swift._DictionaryStorage.allocate(capacity: Swift.Int) -&gt; Swift._DictionaryStorage&lt;A, B&gt; (32,319,750 samples, 0.05%)</title><rect x="873.5" y="197" width="0.7" height="15.0" fill="rgb(247,197,47)" rx="2" ry="2" />
+<text  x="876.53" y="207.5" ></text>
+</g>
+<g >
+<title>nsvg__parseAttr (315,926,417 samples, 0.54%)</title><rect x="1123.2" y="165" width="6.4" height="15.0" fill="rgb(218,60,14)" rx="2" ry="2" />
+<text  x="1126.23" y="175.5" ></text>
+</g>
+<g >
+<title>?? (51,138,222,470 samples, 86.88%)</title><rect x="152.3" y="325" width="1025.2" height="15.0" fill="rgb(249,205,49)" rx="2" ry="2" />
+<text  x="155.31" y="335.5" >??</text>
+</g>
+<g >
+<title>nsvg__minf (5,246,760 samples, 0.01%)</title><rect x="1175.5" y="181" width="0.1" height="15.0" fill="rgb(253,221,52)" rx="2" ry="2" />
+<text  x="1178.54" y="191.5" ></text>
+</g>
+<g >
+<title>nsvg__imageBounds (5,246,760 samples, 0.01%)</title><rect x="1175.5" y="197" width="0.1" height="15.0" fill="rgb(229,112,27)" rx="2" ry="2" />
+<text  x="1178.54" y="207.5" ></text>
+</g>
+<g >
+<title>writeLines (1,100,482,470 samples, 1.87%)</title><rect x="767.0" y="213" width="22.1" height="15.0" fill="rgb(253,221,52)" rx="2" ry="2" />
+<text  x="770.02" y="223.5" >w..</text>
+</g>
+<g >
+<title>?? (9,481,586 samples, 0.02%)</title><rect x="781.8" y="85" width="0.2" height="15.0" fill="rgb(249,205,49)" rx="2" ry="2" />
+<text  x="784.82" y="95.5" ></text>
+</g>
+<g >
+<title>mutableSpan.get (55,806,771 samples, 0.09%)</title><rect x="897.9" y="229" width="1.1" height="15.0" fill="rgb(233,130,31)" rx="2" ry="2" />
+<text  x="900.89" y="239.5" ></text>
+</g>
+<g >
+<title>nsvg__pushAttr (13,699,932 samples, 0.02%)</title><rect x="1174.9" y="165" width="0.3" height="15.0" fill="rgb(206,4,1)" rx="2" ry="2" />
+<text  x="1177.88" y="175.5" ></text>
+</g>
+<g >
+<title>max (9,511,047 samples, 0.02%)</title><rect x="788.7" y="69" width="0.2" height="15.0" fill="rgb(207,12,2)" rx="2" ry="2" />
+<text  x="791.66" y="79.5" ></text>
+</g>
+<g >
+<title>?? (45,245,738 samples, 0.08%)</title><rect x="768.4" y="149" width="0.9" height="15.0" fill="rgb(249,205,49)" rx="2" ry="2" />
+<text  x="771.39" y="159.5" ></text>
+</g>
+<g >
+<title>[unknown] (9,452,002 samples, 0.02%)</title><rect x="714.2" y="117" width="0.2" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="717.19" y="127.5" ></text>
+</g>
+<g >
+<title>tcache_put_n (33,649,331 samples, 0.06%)</title><rect x="127.2" y="389" width="0.7" height="15.0" fill="rgb(217,58,13)" rx="2" ry="2" />
+<text  x="130.20" y="399.5" ></text>
+</g>
+<g >
+<title>tcache_get (8,415,737 samples, 0.01%)</title><rect x="485.4" y="117" width="0.1" height="15.0" fill="rgb(253,222,53)" rx="2" ry="2" />
+<text  x="488.36" y="127.5" ></text>
+</g>
+<g >
+<title>Swift._SetStorage.__deallocating_deinit (10,445,247 samples, 0.02%)</title><rect x="758.0" y="213" width="0.2" height="15.0" fill="rgb(229,112,27)" rx="2" ry="2" />
+<text  x="760.99" y="223.5" ></text>
+</g>
+<g >
+<title>subscript.modify (1,431,218,469 samples, 2.43%)</title><rect x="980.0" y="229" width="28.7" height="15.0" fill="rgb(228,108,25)" rx="2" ry="2" />
+<text  x="982.97" y="239.5" >su..</text>
+</g>
+<g >
+<title>__memmove_avx_unaligned_erms (17,893,336 samples, 0.03%)</title><rect x="948.4" y="117" width="0.4" height="15.0" fill="rgb(205,0,0)" rx="2" ry="2" />
+<text  x="951.41" y="127.5" ></text>
+</g>
+<g >
+<title>init (5,204,091 samples, 0.01%)</title><rect x="1178.9" y="405" width="0.1" height="15.0" fill="rgb(247,193,46)" rx="2" ry="2" />
+<text  x="1181.90" y="415.5" ></text>
+</g>
+<g >
+<title>Swift._SetStorage.deinit (17,868,620 samples, 0.03%)</title><rect x="761.9" y="181" width="0.3" height="15.0" fill="rgb(227,104,25)" rx="2" ry="2" />
+<text  x="764.86" y="191.5" ></text>
+</g>
+<g >
+<title>nsvg__evalBezier (37,729,206 samples, 0.06%)</title><rect x="1136.5" y="117" width="0.7" height="15.0" fill="rgb(231,124,29)" rx="2" ry="2" />
+<text  x="1139.48" y="127.5" ></text>
+</g>
+<g >
+<title>merged function signature specialization &lt;Arg[2] = Dead&gt; of static Swift.Hasher._hash(seed: Swift.Int, _: Swift.UInt64) -&gt; Swift.Int (13,593,238 samples, 0.02%)</title><rect x="874.5" y="181" width="0.3" height="15.0" fill="rgb(216,52,12)" rx="2" ry="2" />
+<text  x="877.51" y="191.5" ></text>
+</g>
+<g >
+<title>_swift_getGenericMetadata (98,792,845 samples, 0.17%)</title><rect x="871.5" y="181" width="2.0" height="15.0" fill="rgb(218,60,14)" rx="2" ry="2" />
+<text  x="874.48" y="191.5" ></text>
+</g>
+<g >
+<title>musable (63,089,943 samples, 0.11%)</title><rect x="486.1" y="149" width="1.3" height="15.0" fill="rgb(250,211,50)" rx="2" ry="2" />
+<text  x="489.10" y="159.5" ></text>
+</g>
+<g >
+<title>_start (51,151,212,121 samples, 86.90%)</title><rect x="152.3" y="421" width="1025.4" height="15.0" fill="rgb(245,185,44)" rx="2" ry="2" />
+<text  x="155.31" y="431.5" >_start</text>
+</g>
+<g >
+<title>unlink_chunk (22,915,009 samples, 0.04%)</title><rect x="142.1" y="389" width="0.5" height="15.0" fill="rgb(236,146,34)" rx="2" ry="2" />
+<text  x="145.15" y="399.5" ></text>
+</g>
+<g >
+<title>_IO_str_init_static_internal (10,403,177 samples, 0.02%)</title><rect x="1125.1" y="85" width="0.3" height="15.0" fill="rgb(220,69,16)" rx="2" ry="2" />
+<text  x="1128.15" y="95.5" ></text>
+</g>
+<g >
+<title>nsvg__getArgsPerElement (6,376,540 samples, 0.01%)</title><rect x="1168.2" y="149" width="0.1" height="15.0" fill="rgb(205,1,0)" rx="2" ry="2" />
+<text  x="1171.22" y="159.5" ></text>
+</g>
+<g >
+<title>bool swift::RefCounts&lt;swift::RefCountBitsT&lt; (124,357,900 samples, 0.21%)</title><rect x="758.7" y="165" width="2.5" height="15.0" fill="rgb(226,96,23)" rx="2" ry="2" />
+<text  x="761.69" y="175.5" ></text>
+</g>
+<g >
+<title>?? (24,107,576 samples, 0.04%)</title><rect x="878.5" y="213" width="0.5" height="15.0" fill="rgb(249,205,49)" rx="2" ry="2" />
+<text  x="881.47" y="223.5" ></text>
+</g>
+<g >
+<title>merged function signature specialization &lt;Arg[2] = Dead&gt; of static Swift.Hasher._hash(seed: Swift.Int, _: Swift.UInt64) -&gt; Swift.Int (61,933,225 samples, 0.11%)</title><rect x="954.1" y="117" width="1.2" height="15.0" fill="rgb(216,52,12)" rx="2" ry="2" />
+<text  x="957.07" y="127.5" ></text>
+</g>
+<g >
+<title>?? (96,669,239 samples, 0.16%)</title><rect x="875.4" y="197" width="1.9" height="15.0" fill="rgb(249,205,49)" rx="2" ry="2" />
+<text  x="878.40" y="207.5" ></text>
+</g>
+<g >
+<title>top12 (8,380,515 samples, 0.01%)</title><rect x="1166.9" y="101" width="0.2" height="15.0" fill="rgb(234,133,32)" rx="2" ry="2" />
+<text  x="1169.91" y="111.5" ></text>
+</g>
+<g >
+<title>Swift._SetStorage.__deallocating_deinit (18,950,242 samples, 0.03%)</title><rect x="761.8" y="197" width="0.4" height="15.0" fill="rgb(229,112,27)" rx="2" ry="2" />
+<text  x="764.83" y="207.5" ></text>
+</g>
+<g >
+<title>__memmove_avx_unaligned_erms (26,288,151 samples, 0.04%)</title><rect x="480.5" y="149" width="0.5" height="15.0" fill="rgb(205,0,0)" rx="2" ry="2" />
+<text  x="483.48" y="159.5" ></text>
+</g>
+<g >
+<title>nsvg__pathLineTo (10,516,756 samples, 0.02%)</title><rect x="1174.6" y="149" width="0.2" height="15.0" fill="rgb(241,169,40)" rx="2" ry="2" />
+<text  x="1177.57" y="159.5" ></text>
+</g>
+<g >
+<title>?? (1,237,036,243 samples, 2.10%)</title><rect x="443.7" y="229" width="24.8" height="15.0" fill="rgb(249,205,49)" rx="2" ry="2" />
+<text  x="446.66" y="239.5" >??</text>
+</g>
+<g >
+<title>_IO_new_file_seekoff (6,256,120 samples, 0.01%)</title><rect x="1114.0" y="213" width="0.1" height="15.0" fill="rgb(233,133,31)" rx="2" ry="2" />
+<text  x="1117.00" y="223.5" ></text>
+</g>
+<g >
+<title>nsvg__pathCubicBezTo (33,672,732 samples, 0.06%)</title><rect x="1173.9" y="149" width="0.7" height="15.0" fill="rgb(217,58,13)" rx="2" ry="2" />
+<text  x="1176.89" y="159.5" ></text>
+</g>
+<g >
+<title>__libc_malloc (7,363,760 samples, 0.01%)</title><rect x="489.0" y="149" width="0.2" height="15.0" fill="rgb(241,166,39)" rx="2" ry="2" />
+<text  x="492.01" y="159.5" ></text>
+</g>
+<g >
+<title>__memmove_avx_unaligned_erms (79,442,523 samples, 0.13%)</title><rect x="481.2" y="165" width="1.6" height="15.0" fill="rgb(205,0,0)" rx="2" ry="2" />
+<text  x="484.21" y="175.5" ></text>
+</g>
+<g >
+<title>_int_free_merge_chunk (43,261,697 samples, 0.07%)</title><rect x="760.0" y="117" width="0.9" height="15.0" fill="rgb(240,163,39)" rx="2" ry="2" />
+<text  x="762.99" y="127.5" ></text>
+</g>
+<g >
+<title>_swift_release_dealloc (10,484,458 samples, 0.02%)</title><rect x="1006.7" y="165" width="0.2" height="15.0" fill="rgb(236,144,34)" rx="2" ry="2" />
+<text  x="1009.67" y="175.5" ></text>
+</g>
+<g >
+<title>?? (44,040,718 samples, 0.07%)</title><rect x="480.3" y="165" width="0.9" height="15.0" fill="rgb(249,205,49)" rx="2" ry="2" />
+<text  x="483.31" y="175.5" ></text>
+</g>
+<g >
+<title>__libc_calloc2 (6,281,284 samples, 0.01%)</title><rect x="1132.5" y="133" width="0.1" height="15.0" fill="rgb(232,128,30)" rx="2" ry="2" />
+<text  x="1135.46" y="143.5" ></text>
+</g>
+<g >
+<title>__malloc_usable_size (38,936,238 samples, 0.07%)</title><rect x="482.9" y="149" width="0.8" height="15.0" fill="rgb(205,4,1)" rx="2" ry="2" />
+<text  x="485.89" y="159.5" ></text>
+</g>
+<g >
+<title>_int_free_maybe_trim (27,373,822 samples, 0.05%)</title><rect x="146.7" y="405" width="0.5" height="15.0" fill="rgb(254,226,54)" rx="2" ry="2" />
+<text  x="149.68" y="415.5" ></text>
+</g>
+<g >
+<title>__libc_malloc (211,272,614 samples, 0.36%)</title><rect x="127.9" y="421" width="4.2" height="15.0" fill="rgb(241,166,39)" rx="2" ry="2" />
+<text  x="130.88" y="431.5" ></text>
+</g>
+<g >
+<title>tcache_put (5,242,891 samples, 0.01%)</title><rect x="142.0" y="389" width="0.1" height="15.0" fill="rgb(241,169,40)" rx="2" ry="2" />
+<text  x="145.04" y="399.5" ></text>
+</g>
+<g >
+<title>swift_arrayDestroy (6,298,577 samples, 0.01%)</title><rect x="759.4" y="117" width="0.2" height="15.0" fill="rgb(224,91,21)" rx="2" ry="2" />
+<text  x="762.43" y="127.5" ></text>
+</g>
+<g >
+<title>__floorf_sse41 (144,749,201 samples, 0.25%)</title><rect x="1103.1" y="213" width="2.9" height="15.0" fill="rgb(245,187,44)" rx="2" ry="2" />
+<text  x="1106.09" y="223.5" ></text>
+</g>
+<g >
+<title>clamped (700,170,154 samples, 1.19%)</title><rect x="819.5" y="213" width="14.0" height="15.0" fill="rgb(223,85,20)" rx="2" ry="2" />
+<text  x="822.50" y="223.5" ></text>
+</g>
+<g >
+<title>_int_free_create_chunk (26,377,253 samples, 0.04%)</title><rect x="760.2" y="101" width="0.6" height="15.0" fill="rgb(244,182,43)" rx="2" ry="2" />
+<text  x="763.25" y="111.5" ></text>
+</g>
+<g >
+<title>?? (959,329,991 samples, 1.63%)</title><rect x="470.9" y="213" width="19.2" height="15.0" fill="rgb(249,205,49)" rx="2" ry="2" />
+<text  x="473.87" y="223.5" ></text>
+</g>
+<g >
+<title>swift_slowAlloc (79,810,588 samples, 0.14%)</title><rect x="487.6" y="165" width="1.6" height="15.0" fill="rgb(253,223,53)" rx="2" ry="2" />
+<text  x="490.56" y="175.5" ></text>
+</g>
+<g >
+<title>subscript.get (64,109,946 samples, 0.11%)</title><rect x="466.7" y="149" width="1.2" height="15.0" fill="rgb(247,195,46)" rx="2" ry="2" />
+<text  x="469.66" y="159.5" ></text>
+</g>
+<g >
+<title>nsvg__parseElement (2,751,132,226 samples, 4.67%)</title><rect x="1120.0" y="197" width="55.2" height="15.0" fill="rgb(210,26,6)" rx="2" ry="2" />
+<text  x="1123.01" y="207.5" >nsvg_..</text>
+</g>
+<g >
+<title>_dl_start (12,989,649 samples, 0.02%)</title><rect x="1177.5" y="405" width="0.2" height="15.0" fill="rgb(237,151,36)" rx="2" ry="2" />
+<text  x="1180.46" y="415.5" ></text>
+</g>
+<g >
+<title>_swift_release_dealloc (227,597,989 samples, 0.39%)</title><rect x="758.2" y="213" width="4.6" height="15.0" fill="rgb(236,144,34)" rx="2" ry="2" />
+<text  x="761.20" y="223.5" ></text>
+</g>
+<g >
+<title>swift_allocObject (88,298,605 samples, 0.15%)</title><rect x="487.4" y="181" width="1.8" height="15.0" fill="rgb(253,224,53)" rx="2" ry="2" />
+<text  x="490.39" y="191.5" ></text>
+</g>
+<g >
+<title>swift_slowAlloc (5,235,883 samples, 0.01%)</title><rect x="489.8" y="181" width="0.1" height="15.0" fill="rgb(253,223,53)" rx="2" ry="2" />
+<text  x="492.81" y="191.5" ></text>
+</g>
+<g >
+<title>__strcmp_avx2 (11,529,242 samples, 0.02%)</title><rect x="1123.0" y="165" width="0.2" height="15.0" fill="rgb(239,159,38)" rx="2" ry="2" />
+<text  x="1126.00" y="175.5" ></text>
+</g>
+<g >
+<title>__libc_malloc2 (9,480,271 samples, 0.02%)</title><rect x="1007.5" y="133" width="0.1" height="15.0" fill="rgb(218,61,14)" rx="2" ry="2" />
+<text  x="1010.45" y="143.5" ></text>
+</g>
+<g >
+<title>swift_isUniquelyReferenced_nonNull_native@plt (5,308,133 samples, 0.01%)</title><rect x="1008.6" y="213" width="0.1" height="15.0" fill="rgb(209,22,5)" rx="2" ry="2" />
+<text  x="1011.55" y="223.5" ></text>
+</g>
+<g >
+<title>nsvg__lineTo (5,273,884 samples, 0.01%)</title><rect x="1174.7" y="133" width="0.1" height="15.0" fill="rgb(206,6,1)" rx="2" ry="2" />
+<text  x="1177.67" y="143.5" ></text>
+</g>
+<g >
+<title>?? (23,272,250 samples, 0.04%)</title><rect x="771.1" y="101" width="0.5" height="15.0" fill="rgb(249,205,49)" rx="2" ry="2" />
+<text  x="774.13" y="111.5" ></text>
+</g>
+<g >
+<title>__ieee754_pow_fma (748,541,672 samples, 1.27%)</title><rect x="1152.1" y="117" width="15.0" height="15.0" fill="rgb(240,163,39)" rx="2" ry="2" />
+<text  x="1155.07" y="127.5" ></text>
+</g>
+<g >
+<title>static Swift._SetStorage.allocate(scale: Swift.Int8, age: Swift.Int32?, seed: Swift.Int?) -&gt; Swift._SetStorage&lt;A&gt; (50,403,798 samples, 0.09%)</title><rect x="874.2" y="197" width="1.0" height="15.0" fill="rgb(221,76,18)" rx="2" ry="2" />
+<text  x="877.20" y="207.5" ></text>
+</g>
+<g >
+<title>max (23,152,489 samples, 0.04%)</title><rect x="782.5" y="101" width="0.4" height="15.0" fill="rgb(207,12,2)" rx="2" ry="2" />
+<text  x="785.47" y="111.5" ></text>
+</g>
+<g >
+<title>?? (24,133,365 samples, 0.04%)</title><rect x="784.3" y="69" width="0.5" height="15.0" fill="rgb(249,205,49)" rx="2" ry="2" />
+<text  x="787.31" y="79.5" ></text>
+</g>
+<g >
+<title>?? (12,602,479 samples, 0.02%)</title><rect x="787.5" y="37" width="0.3" height="15.0" fill="rgb(249,205,49)" rx="2" ry="2" />
+<text  x="790.55" y="47.5" ></text>
+</g>
+<g >
+<title>min (46,258,940 samples, 0.08%)</title><rect x="1107.7" y="213" width="0.9" height="15.0" fill="rgb(220,71,17)" rx="2" ry="2" />
+<text  x="1110.66" y="223.5" ></text>
+</g>
+<g >
+<title>__strcmp_avx2 (8,369,845 samples, 0.01%)</title><rect x="1129.8" y="165" width="0.1" height="15.0" fill="rgb(239,159,38)" rx="2" ry="2" />
+<text  x="1132.76" y="175.5" ></text>
+</g>
+<g >
+<title>?? (1,797,825,218 samples, 3.05%)</title><rect x="901.9" y="181" width="36.0" height="15.0" fill="rgb(249,205,49)" rx="2" ry="2" />
+<text  x="904.88" y="191.5" >??</text>
+</g>
+<g >
+<title>?? (9,398,903 samples, 0.02%)</title><rect x="764.8" y="133" width="0.2" height="15.0" fill="rgb(249,205,49)" rx="2" ry="2" />
+<text  x="767.81" y="143.5" ></text>
+</g>
+<g >
+<title>do_lookup_x (5,187,355 samples, 0.01%)</title><rect x="1177.6" y="245" width="0.1" height="15.0" fill="rgb(245,187,44)" rx="2" ry="2" />
+<text  x="1180.60" y="255.5" ></text>
+</g>
+<g >
+<title>?? (27,400,587 samples, 0.05%)</title><rect x="779.5" y="85" width="0.6" height="15.0" fill="rgb(249,205,49)" rx="2" ry="2" />
+<text  x="782.54" y="95.5" ></text>
+</g>
+<g >
+<title>main (51,138,222,470 samples, 86.88%)</title><rect x="152.3" y="341" width="1025.2" height="15.0" fill="rgb(243,179,42)" rx="2" ry="2" />
+<text  x="155.31" y="351.5" >main</text>
+</g>
+<g >
+<title>sample (328,395,806 samples, 0.56%)</title><rect x="833.5" y="213" width="6.6" height="15.0" fill="rgb(216,51,12)" rx="2" ry="2" />
+<text  x="836.53" y="223.5" ></text>
+</g>
+<g >
+<title>clipY (1,009,087,607 samples, 1.71%)</title><rect x="840.1" y="229" width="20.2" height="15.0" fill="rgb(249,205,49)" rx="2" ry="2" />
+<text  x="843.12" y="239.5" ></text>
+</g>
+<g >
+<title>____strtoul_l_internal (28,554,306 samples, 0.05%)</title><rect x="1128.4" y="85" width="0.5" height="15.0" fill="rgb(223,83,20)" rx="2" ry="2" />
+<text  x="1131.36" y="95.5" ></text>
+</g>
+<g >
+<title>transformed (45,209,702 samples, 0.08%)</title><rect x="765.6" y="197" width="0.9" height="15.0" fill="rgb(232,127,30)" rx="2" ry="2" />
+<text  x="768.63" y="207.5" ></text>
+</g>
+<g >
+<title>isFlat (6,288,962 samples, 0.01%)</title><rect x="789.0" y="69" width="0.1" height="15.0" fill="rgb(216,53,12)" rx="2" ry="2" />
+<text  x="791.95" y="79.5" ></text>
+</g>
+<g >
+<title>nsvg__pathCubicBezShortTo (16,874,807 samples, 0.03%)</title><rect x="1173.6" y="149" width="0.3" height="15.0" fill="rgb(206,8,2)" rx="2" ry="2" />
+<text  x="1176.55" y="159.5" ></text>
+</g>
+<g >
+<title>_swift_release_dealloc (92,753,075 samples, 0.16%)</title><rect x="759.2" y="149" width="1.9" height="15.0" fill="rgb(236,144,34)" rx="2" ry="2" />
+<text  x="762.22" y="159.5" ></text>
+</g>
+<g >
+<title>Swift.Int._rawHashValue(seed: Swift.Int) -&gt; Swift.Int (45,096,135 samples, 0.08%)</title><rect x="961.4" y="149" width="0.9" height="15.0" fill="rgb(213,37,8)" rx="2" ry="2" />
+<text  x="964.35" y="159.5" ></text>
+</g>
+<g >
+<title>_int_malloc (463,666,185 samples, 0.79%)</title><rect x="133.3" y="405" width="9.3" height="15.0" fill="rgb(215,47,11)" rx="2" ry="2" />
+<text  x="136.31" y="415.5" ></text>
+</g>
+<g >
+<title>max (11,685,662 samples, 0.02%)</title><rect x="1113.5" y="213" width="0.3" height="15.0" fill="rgb(207,12,2)" rx="2" ry="2" />
+<text  x="1116.53" y="223.5" ></text>
+</g>
+<g >
+<title>__libc_malloc (156,297,345 samples, 0.27%)</title><rect x="142.6" y="421" width="3.2" height="15.0" fill="rgb(241,166,39)" rx="2" ry="2" />
+<text  x="145.63" y="431.5" ></text>
+</g>
+<g >
+<title>max (77,635,177 samples, 0.13%)</title><rect x="819.5" y="197" width="1.6" height="15.0" fill="rgb(207,12,2)" rx="2" ry="2" />
+<text  x="822.50" y="207.5" ></text>
+</g>
+<g >
+<title>?? (15,746,790 samples, 0.03%)</title><rect x="767.5" y="181" width="0.3" height="15.0" fill="rgb(249,205,49)" rx="2" ry="2" />
+<text  x="770.50" y="191.5" ></text>
+</g>
+<g >
+<title>swift_isUniquelyReferenced_nonNull_native (44,176,319 samples, 0.08%)</title><rect x="1176.2" y="245" width="0.9" height="15.0" fill="rgb(243,179,42)" rx="2" ry="2" />
+<text  x="1179.21" y="255.5" ></text>
+</g>
+<g >
+<title>cross (17,920,049 samples, 0.03%)</title><rect x="786.2" y="85" width="0.4" height="15.0" fill="rgb(234,136,32)" rx="2" ry="2" />
+<text  x="789.20" y="95.5" ></text>
+</g>
+<g >
+<title>__strtol (24,230,226 samples, 0.04%)</title><rect x="1167.1" y="133" width="0.5" height="15.0" fill="rgb(243,176,42)" rx="2" ry="2" />
+<text  x="1170.12" y="143.5" ></text>
+</g>
+<g >
+<title>renderSvg (51,134,069,778 samples, 86.87%)</title><rect x="152.4" y="261" width="1025.0" height="15.0" fill="rgb(215,47,11)" rx="2" ry="2" />
+<text  x="155.37" y="271.5" >renderSvg</text>
+</g>
+<g >
+<title>__libc_start_main@@GLIBC_2.34 (51,138,222,470 samples, 86.88%)</title><rect x="152.3" y="405" width="1025.2" height="15.0" fill="rgb(229,113,27)" rx="2" ry="2" />
+<text  x="155.31" y="415.5" >__libc_start_main@@GLIBC_2.34</text>
+</g>
+<g >
+<title>swift_allocObject (20,028,842 samples, 0.03%)</title><rect x="874.8" y="181" width="0.4" height="15.0" fill="rgb(253,224,53)" rx="2" ry="2" />
+<text  x="877.78" y="191.5" ></text>
+</g>
+<g >
+<title>__memcmp_avx2_movbe (17,866,337 samples, 0.03%)</title><rect x="145.8" y="421" width="0.4" height="15.0" fill="rgb(224,91,21)" rx="2" ry="2" />
+<text  x="148.82" y="431.5" ></text>
+</g>
+<g >
+<title>_swift_release_dealloc (9,505,146 samples, 0.02%)</title><rect x="767.3" y="181" width="0.2" height="15.0" fill="rgb(236,144,34)" rx="2" ry="2" />
+<text  x="770.31" y="191.5" ></text>
+</g>
+<g >
+<title>swift::MetadataCacheKey::operator== (10,488,526 samples, 0.02%)</title><rect x="872.9" y="133" width="0.2" height="15.0" fill="rgb(253,223,53)" rx="2" ry="2" />
+<text  x="875.94" y="143.5" ></text>
+</g>
+<g >
+<title>?? (24,345,601 samples, 0.04%)</title><rect x="771.1" y="117" width="0.5" height="15.0" fill="rgb(249,205,49)" rx="2" ry="2" />
+<text  x="774.11" y="127.5" ></text>
+</g>
+<g >
+<title>append (15,759,723 samples, 0.03%)</title><rect x="787.5" y="85" width="0.3" height="15.0" fill="rgb(230,119,28)" rx="2" ry="2" />
+<text  x="790.48" y="95.5" ></text>
+</g>
+<g >
+<title>?? (1,160,850,625 samples, 1.97%)</title><rect x="444.7" y="181" width="23.2" height="15.0" fill="rgb(249,205,49)" rx="2" ry="2" />
+<text  x="447.68" y="191.5" >??</text>
+</g>
+<g >
+<title>nsvg__atof (9,414,272 samples, 0.02%)</title><rect x="1129.3" y="117" width="0.2" height="15.0" fill="rgb(253,221,52)" rx="2" ry="2" />
+<text  x="1132.32" y="127.5" ></text>
+</g>
+<g >
+<title>nsvg__atof (16,919,565 samples, 0.03%)</title><rect x="1189.5" y="421" width="0.4" height="15.0" fill="rgb(253,221,52)" rx="2" ry="2" />
+<text  x="1192.53" y="431.5" ></text>
+</g>
+<g >
+<title>writeLines (1,056,363,227 samples, 1.79%)</title><rect x="767.9" y="197" width="21.2" height="15.0" fill="rgb(253,221,52)" rx="2" ry="2" />
+<text  x="770.90" y="207.5" ></text>
+</g>
+<g >
+<title>bool swift::RefCounts&lt;swift::RefCountBitsT&lt; (6,206,637 samples, 0.01%)</title><rect x="154.7" y="181" width="0.2" height="15.0" fill="rgb(226,96,23)" rx="2" ry="2" />
+<text  x="157.73" y="191.5" ></text>
+</g>
+<g >
+<title>lerp (20,971,116 samples, 0.04%)</title><rect x="777.8" y="117" width="0.4" height="15.0" fill="rgb(253,223,53)" rx="2" ry="2" />
+<text  x="780.82" y="127.5" ></text>
+</g>
+<g >
+<title>swift::metadataimpl::ValueWitnesses&lt;swift::metadataimpl::SwiftRetainableBox&gt;::destroy (7,404,782 samples, 0.01%)</title><rect x="761.2" y="165" width="0.1" height="15.0" fill="rgb(248,200,47)" rx="2" ry="2" />
+<text  x="764.18" y="175.5" ></text>
+</g>
+<g >
+<title>swift_isUniquelyReferenced_nonNull_native@plt (12,548,481 samples, 0.02%)</title><rect x="948.8" y="133" width="0.2" height="15.0" fill="rgb(209,22,5)" rx="2" ry="2" />
+<text  x="951.77" y="143.5" ></text>
+</g>
+<g >
+<title>nsvg__curveBounds (238,500,073 samples, 0.41%)</title><rect x="1132.8" y="133" width="4.8" height="15.0" fill="rgb(209,22,5)" rx="2" ry="2" />
+<text  x="1135.82" y="143.5" ></text>
+</g>
+<g >
+<title>?? (76,793,632 samples, 0.13%)</title><rect x="867.8" y="181" width="1.5" height="15.0" fill="rgb(249,205,49)" rx="2" ry="2" />
+<text  x="870.80" y="191.5" ></text>
+</g>
+<g >
+<title>removeAll (1,215,013,186 samples, 2.06%)</title><rect x="937.9" y="229" width="24.4" height="15.0" fill="rgb(223,85,20)" rx="2" ry="2" />
+<text  x="940.92" y="239.5" >r..</text>
+</g>
+<g >
+<title>?? (30,513,234 samples, 0.05%)</title><rect x="769.5" y="117" width="0.6" height="15.0" fill="rgb(249,205,49)" rx="2" ry="2" />
+<text  x="772.53" y="127.5" ></text>
+</g>
+<g >
+<title>append (90,367,968 samples, 0.15%)</title><rect x="763.6" y="197" width="1.8" height="15.0" fill="rgb(230,119,28)" rx="2" ry="2" />
+<text  x="766.63" y="207.5" ></text>
+</g>
+<g >
+<title>__fopen_internal (5,273,359 samples, 0.01%)</title><rect x="1113.9" y="229" width="0.1" height="15.0" fill="rgb(248,197,47)" rx="2" ry="2" />
+<text  x="1116.90" y="239.5" ></text>
+</g>
+<g >
+<title>[unknown] (6,261,724 samples, 0.01%)</title><rect x="468.5" y="213" width="0.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="471.45" y="223.5" ></text>
+</g>
+<g >
+<title>abs (8,459,840 samples, 0.01%)</title><rect x="786.0" y="85" width="0.2" height="15.0" fill="rgb(210,27,6)" rx="2" ry="2" />
+<text  x="789.03" y="95.5" ></text>
+</g>
+<g >
+<title>sort (20,976,816 samples, 0.04%)</title><rect x="962.3" y="229" width="0.4" height="15.0" fill="rgb(217,59,14)" rx="2" ry="2" />
+<text  x="965.28" y="239.5" ></text>
+</g>
+<g >
+<title>?? (50,648,504 samples, 0.09%)</title><rect x="1177.9" y="405" width="1.0" height="15.0" fill="rgb(249,205,49)" rx="2" ry="2" />
+<text  x="1180.87" y="415.5" ></text>
+</g>
+<g >
+<title>__memset_avx2_unaligned_erms (3,906,010,728 samples, 6.64%)</title><rect x="1011.3" y="197" width="78.3" height="15.0" fill="rgb(223,84,20)" rx="2" ry="2" />
+<text  x="1014.33" y="207.5" >__memset_..</text>
+</g>
+<g >
+<title>?? (15,746,790 samples, 0.03%)</title><rect x="767.5" y="165" width="0.3" height="15.0" fill="rgb(249,205,49)" rx="2" ry="2" />
+<text  x="770.50" y="175.5" ></text>
+</g>
+<g >
+<title>isFlat (113,411,666 samples, 0.19%)</title><rect x="784.8" y="101" width="2.3" height="15.0" fill="rgb(216,53,12)" rx="2" ry="2" />
+<text  x="787.79" y="111.5" ></text>
+</g>
+<g >
+<title>lerp (12,539,788 samples, 0.02%)</title><rect x="787.1" y="85" width="0.3" height="15.0" fill="rgb(253,223,53)" rx="2" ry="2" />
+<text  x="790.11" y="95.5" ></text>
+</g>
+<g >
+<title>bool swift::RefCounts&lt;swift::RefCountBitsT&lt; (6,340,214 samples, 0.01%)</title><rect x="779.9" y="53" width="0.1" height="15.0" fill="rgb(226,96,23)" rx="2" ry="2" />
+<text  x="782.92" y="63.5" ></text>
+</g>
+<g >
+<title>swift_retain (7,558,494 samples, 0.01%)</title><rect x="468.3" y="197" width="0.1" height="15.0" fill="rgb(247,197,47)" rx="2" ry="2" />
+<text  x="471.28" y="207.5" ></text>
+</g>
+<g >
+<title>$main (51,138,222,470 samples, 86.88%)</title><rect x="152.3" y="357" width="1025.2" height="15.0" fill="rgb(211,29,7)" rx="2" ry="2" />
+<text  x="155.31" y="367.5" >$main</text>
+</g>
+<g >
+<title>?? (919,424,718 samples, 1.56%)</title><rect x="449.5" y="165" width="18.4" height="15.0" fill="rgb(249,205,49)" rx="2" ry="2" />
+<text  x="452.52" y="175.5" ></text>
+</g>
+<g >
+<title>_dl_relocate_object_no_relro (11,650,054 samples, 0.02%)</title><rect x="1177.5" y="325" width="0.2" height="15.0" fill="rgb(236,142,34)" rx="2" ry="2" />
+<text  x="1180.48" y="335.5" ></text>
+</g>
+<g >
+<title>?? (22,023,156 samples, 0.04%)</title><rect x="784.3" y="53" width="0.5" height="15.0" fill="rgb(249,205,49)" rx="2" ry="2" />
+<text  x="787.35" y="63.5" ></text>
+</g>
+<g >
+<title>__strcmp_avx2 (31,566,053 samples, 0.05%)</title><rect x="1172.9" y="117" width="0.6" height="15.0" fill="rgb(239,159,38)" rx="2" ry="2" />
+<text  x="1175.90" y="127.5" ></text>
+</g>
+<g >
+<title>bool swift::RefCounts&lt;swift::RefCountBitsT&lt; (249,592,058 samples, 0.42%)</title><rect x="757.8" y="229" width="5.0" height="15.0" fill="rgb(226,96,23)" rx="2" ry="2" />
+<text  x="760.78" y="239.5" ></text>
+</g>
+<g >
+<title>nsvg__addPoint (10,560,452 samples, 0.02%)</title><rect x="1174.4" y="117" width="0.2" height="15.0" fill="rgb(214,43,10)" rx="2" ry="2" />
+<text  x="1177.36" y="127.5" ></text>
+</g>
+<g >
+<title>_dl_lookup_symbol_x (6,590,086 samples, 0.01%)</title><rect x="1177.6" y="261" width="0.1" height="15.0" fill="rgb(211,28,6)" rx="2" ry="2" />
+<text  x="1180.57" y="271.5" ></text>
+</g>
+<g >
+<title>Swift._ContiguousArrayStorage.__deallocating_deinit (10,547,908 samples, 0.02%)</title><rect x="759.0" y="149" width="0.2" height="15.0" fill="rgb(241,167,40)" rx="2" ry="2" />
+<text  x="762.00" y="159.5" ></text>
+</g>
+<g >
+<title>swift_allocObject (17,941,850 samples, 0.03%)</title><rect x="1007.3" y="165" width="0.4" height="15.0" fill="rgb(253,224,53)" rx="2" ry="2" />
+<text  x="1010.35" y="175.5" ></text>
+</g>
+<g >
+<title>nsvg__ptInBounds (12,600,700 samples, 0.02%)</title><rect x="1137.3" y="117" width="0.3" height="15.0" fill="rgb(251,213,51)" rx="2" ry="2" />
+<text  x="1140.35" y="127.5" ></text>
+</g>
+<g >
+<title>?? (33,626,948 samples, 0.06%)</title><rect x="784.1" y="85" width="0.7" height="15.0" fill="rgb(249,205,49)" rx="2" ry="2" />
+<text  x="787.12" y="95.5" ></text>
+</g>
+<g >
+<title>swift_slowAlloc (6,291,757 samples, 0.01%)</title><rect x="154.9" y="165" width="0.1" height="15.0" fill="rgb(253,223,53)" rx="2" ry="2" />
+<text  x="157.85" y="175.5" ></text>
+</g>
+<g >
+<title>?? (1,353,349,552 samples, 2.30%)</title><rect x="981.0" y="213" width="27.2" height="15.0" fill="rgb(249,205,49)" rx="2" ry="2" />
+<text  x="984.02" y="223.5" >??</text>
+</g>
+<g >
+<title>bool swift::RefCounts&lt;swift::RefCountBitsT&lt; (16,758,785 samples, 0.03%)</title><rect x="1006.6" y="181" width="0.3" height="15.0" fill="rgb(226,96,23)" rx="2" ry="2" />
+<text  x="1009.57" y="191.5" ></text>
+</g>
+<g >
+<title>?? (238,950,601 samples, 0.41%)</title><rect x="974.9" y="197" width="4.8" height="15.0" fill="rgb(249,205,49)" rx="2" ry="2" />
+<text  x="977.92" y="207.5" ></text>
+</g>
+<g >
+<title>swift_slowAlloc (8,369,457 samples, 0.01%)</title><rect x="766.7" y="165" width="0.2" height="15.0" fill="rgb(253,223,53)" rx="2" ry="2" />
+<text  x="769.73" y="175.5" ></text>
+</g>
+<g >
+<title>min (49,456,190 samples, 0.08%)</title><rect x="465.7" y="133" width="1.0" height="15.0" fill="rgb(220,71,17)" rx="2" ry="2" />
+<text  x="468.67" y="143.5" ></text>
+</g>
+<g >
+<title>all (58,862,956,329 samples, 100%)</title><rect x="10.0" y="453" width="1180.0" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="13.00" y="463.5" ></text>
+</g>
+<g >
+<title>_int_malloc (8,369,457 samples, 0.01%)</title><rect x="766.7" y="133" width="0.2" height="15.0" fill="rgb(215,47,11)" rx="2" ry="2" />
+<text  x="769.73" y="143.5" ></text>
+</g>
+<g >
+<title>swift_release (9,461,086 samples, 0.02%)</title><rect x="490.1" y="213" width="0.2" height="15.0" fill="rgb(240,164,39)" rx="2" ry="2" />
+<text  x="493.15" y="223.5" ></text>
+</g>
+<g >
+<title>?? (1,215,013,186 samples, 2.06%)</title><rect x="937.9" y="213" width="24.4" height="15.0" fill="rgb(249,205,49)" rx="2" ry="2" />
+<text  x="940.92" y="223.5" >??</text>
+</g>
+<g >
+<title>contains (312,640,732 samples, 0.53%)</title><rect x="949.1" y="165" width="6.2" height="15.0" fill="rgb(238,154,37)" rx="2" ry="2" />
+<text  x="952.07" y="175.5" ></text>
+</g>
+<g >
+<title>nsvg__parsePath (2,210,088,122 samples, 3.75%)</title><rect x="1130.6" y="165" width="44.3" height="15.0" fill="rgb(208,16,3)" rx="2" ry="2" />
+<text  x="1133.58" y="175.5" >nsvg..</text>
+</g>
+<g >
+<title>?? (20,976,816 samples, 0.04%)</title><rect x="962.3" y="213" width="0.4" height="15.0" fill="rgb(249,205,49)" rx="2" ry="2" />
+<text  x="965.28" y="223.5" ></text>
+</g>
+<g >
+<title>static Swift._DictionaryStorage.resize(original: Swift.__RawDictionaryStorage, capacity: Swift.Int, move: Swift.Bool) -&gt; Swift._DictionaryStorage&lt;A, B&gt; (16,848,134 samples, 0.03%)</title><rect x="1007.7" y="181" width="0.3" height="15.0" fill="rgb(248,201,48)" rx="2" ry="2" />
+<text  x="1010.71" y="191.5" ></text>
+</g>
+<g >
+<title>max (65,320,636 samples, 0.11%)</title><rect x="1106.4" y="213" width="1.3" height="15.0" fill="rgb(207,12,2)" rx="2" ry="2" />
+<text  x="1109.35" y="223.5" ></text>
+</g>
+<g >
+<title>minX.get (617,744,380 samples, 1.05%)</title><rect x="454.3" y="149" width="12.4" height="15.0" fill="rgb(237,150,36)" rx="2" ry="2" />
+<text  x="457.28" y="159.5" ></text>
+</g>
+<g >
+<title>____strtol_l_internal (339,492,304 samples, 0.58%)</title><rect x="1143.7" y="133" width="6.8" height="15.0" fill="rgb(229,110,26)" rx="2" ry="2" />
+<text  x="1146.66" y="143.5" ></text>
+</g>
+<g >
+<title>swift_retain_n (16,657,834 samples, 0.03%)</title><rect x="1010.4" y="229" width="0.3" height="15.0" fill="rgb(223,86,20)" rx="2" ry="2" />
+<text  x="1013.41" y="239.5" ></text>
+</g>
+<g >
+<title>?? (48,366,084 samples, 0.08%)</title><rect x="867.9" y="165" width="0.9" height="15.0" fill="rgb(249,205,49)" rx="2" ry="2" />
+<text  x="870.87" y="175.5" ></text>
+</g>
+<g >
+<title>[unknown] (30,937,705 samples, 0.05%)</title><rect x="713.8" y="165" width="0.6" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="716.76" y="175.5" ></text>
+</g>
+<g >
+<title>floorf@plt (5,238,891 samples, 0.01%)</title><rect x="465.6" y="133" width="0.1" height="15.0" fill="rgb(243,177,42)" rx="2" ry="2" />
+<text  x="468.57" y="143.5" ></text>
+</g>
+<g >
+<title>nsvgParse (3,068,528,025 samples, 5.21%)</title><rect x="1114.1" y="229" width="61.5" height="15.0" fill="rgb(207,10,2)" rx="2" ry="2" />
+<text  x="1117.13" y="239.5" >nsvgPa..</text>
+</g>
+<g >
+<title>Swift._DictionaryStorage.__deallocating_deinit (172,683,566 samples, 0.29%)</title><rect x="758.4" y="197" width="3.4" height="15.0" fill="rgb(210,25,6)" rx="2" ry="2" />
+<text  x="761.35" y="207.5" ></text>
+</g>
+<g >
+<title>function signature specialization &lt;Arg[1] = Dead&gt; of static Swift._HashTable.scale(forCapacity: Swift.Int) -&gt; Swift.Int8 (15,804,887 samples, 0.03%)</title><rect x="1007.7" y="165" width="0.3" height="15.0" fill="rgb(228,106,25)" rx="2" ry="2" />
+<text  x="1010.73" y="175.5" ></text>
+</g>
+<g >
+<title>min (206,924,096 samples, 0.35%)</title><rect x="852.7" y="197" width="4.1" height="15.0" fill="rgb(220,71,17)" rx="2" ry="2" />
+<text  x="855.67" y="207.5" ></text>
+</g>
+<g >
+<title>isEmpty.get (96,669,239 samples, 0.16%)</title><rect x="875.4" y="229" width="1.9" height="15.0" fill="rgb(223,85,20)" rx="2" ry="2" />
+<text  x="878.40" y="239.5" ></text>
+</g>
+<g >
+<title>_int_free_merge_chunk (236,753,168 samples, 0.40%)</title><rect x="147.2" y="405" width="4.8" height="15.0" fill="rgb(240,163,39)" rx="2" ry="2" />
+<text  x="150.23" y="415.5" ></text>
+</g>
+<g >
+<title>fillScanline (47,826,195,457 samples, 81.25%)</title><rect x="155.1" y="245" width="958.7" height="15.0" fill="rgb(229,110,26)" rx="2" ry="2" />
+<text  x="158.06" y="255.5" >fillScanline</text>
+</g>
+<g >
+<title>isFlat (141,173,302 samples, 0.24%)</title><rect x="780.1" y="117" width="2.8" height="15.0" fill="rgb(216,53,12)" rx="2" ry="2" />
+<text  x="783.11" y="127.5" ></text>
+</g>
+<g >
+<title>floorf@plt (17,953,614 samples, 0.03%)</title><rect x="1106.0" y="213" width="0.4" height="15.0" fill="rgb(243,177,42)" rx="2" ry="2" />
+<text  x="1108.99" y="223.5" ></text>
+</g>
+<g >
+<title>?? (52,317,022 samples, 0.09%)</title><rect x="936.9" y="165" width="1.0" height="15.0" fill="rgb(249,205,49)" rx="2" ry="2" />
+<text  x="939.87" y="175.5" ></text>
+</g>
+</g>
+</svg>
