@@ -26,12 +26,12 @@ struct strip102: ParsableCommand {
     }
 
     func run() {
-        idk(algorithm: fillAlgorithm)
-        // if bench {
-        //     benchSvg(file, scale: scale, algorithm: fillAlgorithm)
-        // } else {
-        //     importSvg(file, scale: scale, algorithm: fillAlgorithm)
-        // }
+        // idk(algorithm: fillAlgorithm)
+        if bench {
+            benchSvg(file, scale: scale, algorithm: fillAlgorithm)
+        } else {
+            importSvg(file, scale: scale, algorithm: fillAlgorithm)
+        }
     }
 
     func idk(algorithm: FillAlgorithm) {
@@ -41,20 +41,8 @@ struct strip102: ParsableCommand {
         path.line(to: Point(15, 8))
         path.line(to: Point(15, 2))
 
-        let width = 100
-        let height = 100
-        let pixels = UnsafeMutableBufferPointer<Pixel>
-            .allocate(capacity: width * height)
-
-        var span = pixels.mutableSpan
-        fill(
-            algorithm,
-            path: path,
-            color: .red,
-            pixels: &span,
-            width: width,
-            height: height
-        )
-
+        var canvas = Canvas(width: 100, height: 100, fillAlgorithm: algorithm)
+        canvas.draw(path, color: .red)
+        canvas.flush()
     }
 }

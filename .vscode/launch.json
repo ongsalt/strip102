@@ -3,7 +3,7 @@
         {
             "type": "swift",
             "request": "launch",
-            "args": [],
+            "args": ["tiger.svg", "--fill", "sparse-strip"],
             "cwd": "${workspaceFolder:strip102}",
             "name": "Debug strip102",
             "target": "strip102",

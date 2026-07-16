@@ -1,3 +1,20 @@
+import Dispatch
+
+// dont need to fill immediately
+func fillSparseStrip(
+  path: borrowing Path,
+  color: borrowing Color,
+  transform: Affine = .identity,
+  pixels: inout MutableSpan<Pixel>,
+  width: Int,
+  height: Int
+) {
+  let lines = path.breakIntoLines(transform: transform, tolerance: 0.25)
+  let tiles = generateTiles(lines: lines)
+
+  generateStrips(tiles: tiles)
+}
+
 struct Tile {
   let x: UInt16
   let y: UInt16
@@ -9,42 +26,9 @@ struct Tile {
   }
 }
 
-struct Strip {
-  var x: UInt16
-  var y: UInt16
-  var _coverageIndex: UInt32
-
-  var coverageIndex: UInt32 {
-    _coverageIndex & ~(0x1 << 31)
-  }
-
-  var shouldFillLeft: Bool {
-    get {
-      (_coverageIndex >> 31) == 0x1
-    }
-    set {
-      _coverageIndex = ((newValue ? 0x1 : 0x0) << 31) | coverageIndex
-    }
-  }
-}
-
-enum FillCommand {
-  case solid(x: UInt16, y: UInt16, w: UInt16)
-  case antialiased(x: UInt16, y: UInt16, coverageIndex: UInt32)
-}
-
-func fillSparseStrip(
-  path: borrowing Path,
-  color: borrowing Color,
-  transform: Affine = .identity,
-  pixels: inout MutableSpan<Pixel>,
-  width: Int,
-  height: Int
-) {
-  let lines = path.breakIntoLines(transform: transform, tolerance: 0.25)
-
+// TODO: Borrowing iterator
+func generateTiles(lines: consuming [Line]) -> [Tile] {
   var tiles: [Tile] = []
-
   let tileSize = 4  // 16; 4 by 4
 
   for line in lines {
@@ -97,7 +81,61 @@ func fillSparseStrip(
     return a.y < b.y
   }
 
-  for t in tiles {
-    print(t)
+  return tiles
+}
+
+struct _Strip {
+  var x: UInt16
+  var y: UInt16
+  var _coverageIndex: UInt32
+
+  var coverageIndex: UInt32 {
+    _coverageIndex & ~(0x1 << 31)
   }
+
+  var shouldFillLeft: Bool {
+    get {
+      (_coverageIndex >> 31) == 0x1
+    }
+    set {
+      _coverageIndex = ((newValue ? 0x1 : 0x0) << 31) | coverageIndex
+    }
+  }
+}
+
+struct Region {
+  // inclusive, not half open
+  let tileIndexStart: Int
+  let tileIndexEnd: Int
+  let winding: Int
+}
+
+func generateStrips(tiles: [Tile]) {
+  var regions: [Region] = []
+  var winding = 0
+
+  var i = 0
+  while i < tiles.count {
+    let start = i
+    let w = winding
+    while i < tiles.count - 1 {
+      let next = tiles[i + 1]
+      if next.y == tiles[i].y && next.x - tiles[i].x <= 1 {
+        if next.hasWinding {
+          winding += next.line.direction > 0 ? 1 : 0
+        }
+        i += 1
+      } else {
+        winding = 0
+        break
+      }
+    }
+
+    regions.append(Region(tileIndexStart: start, tileIndexEnd: i, winding: w))
+    i += 1
+  }
+
+  print(regions)
+
+  // spawn thread to compute coverage
 }

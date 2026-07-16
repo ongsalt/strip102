@@ -1,30 +1,22 @@
 import Cnanosvg
 import Foundation
 
-struct RenderedImage {
-  var pixels: UnsafeMutableBufferPointer<Pixel>
-  var width: Int
-  var height: Int
-}
-
-/// Rasterizes an already-parsed SVG into an RGBA8 pixel buffer. The caller owns `pixels` and must
-/// `deallocate()` it.
+/// Rasterizes an already-parsed SVG, returning the canvas holding the RGBA8 pixels. The canvas
+/// frees them when it goes out of scope.
 func rasterizeSvg(
   _ image: UnsafeMutablePointer<NSVGimage>,
   scale: Float = 1.0,
   algorithm: FillAlgorithm = .default,
   verbose: Bool = true
-) -> RenderedImage {
+) -> Canvas {
   var shape = image.pointee.shapes
   var index = 0
 
   let width = Int((image.pointee.width * scale).rounded(.up))
   let height = Int((image.pointee.height * scale).rounded(.up))
-  let pixels = UnsafeMutableBufferPointer<Pixel>
-    .allocate(capacity: width * height)
 
-  var span = pixels.mutableSpan
-  let transform = Affine.identity.scaled(x: scale, y: scale)
+  var canvas = Canvas(width: width, height: height, fillAlgorithm: algorithm)
+  canvas.scale(x: scale, y: scale)
 
   while shape != nil {
     // nanosvg packs color as 0xAABBGGRR, not the 0xRRGGBB our Color(hex:) expects
@@ -56,9 +48,7 @@ func rasterizeSvg(
         // why tf is it cubic bez
       }
 
-      fill(
-        algorithm,
-        path: mPath, color: color, transform: transform, pixels: &span, width: width, height: height)
+      canvas.draw(mPath, color: color)
 
       path = path!.pointee.next
     }
@@ -67,7 +57,9 @@ func rasterizeSvg(
     index += 1
   }
 
-  return RenderedImage(pixels: pixels, width: width, height: height)
+  canvas.flush()
+
+  return canvas
 }
 
 /// Parses an SVG file. The caller owns the returned image and must `nsvgDelete` it.
@@ -85,14 +77,12 @@ func importSvg(_ filename: String, scale: Float = 1.0, algorithm: FillAlgorithm 
   let parsed = parseSvg(filename)
   defer { nsvgDelete(parsed) }
 
-  let image = rasterizeSvg(parsed, scale: scale, algorithm: algorithm)
+  var canvas = rasterizeSvg(parsed, scale: scale, algorithm: algorithm)
 
   let stem = URL(fileURLWithPath: filename).deletingPathExtension().lastPathComponent
   let ppmPath = "\(stem).ppm"
 
-  try! writePpm(pixels: image.pixels.span, width: image.width, height: image.height, to: ppmPath)
-
-  image.pixels.deallocate()
+  try! canvas.save(to: ppmPath)
 
   print("importSvg(\(filename)) took \(clock.now - start)")
 
@@ -116,9 +106,9 @@ func benchSvg(
 
   for _ in 0..<iterations {
     let start = clock.now
-    let image = rasterizeSvg(parsed, scale: scale, algorithm: algorithm, verbose: false)
+    let canvas = rasterizeSvg(parsed, scale: scale, algorithm: algorithm, verbose: false)
     durations.append(clock.now - start)
-    image.pixels.deallocate()
+    _ = consume canvas
   }
 
   let total = durations.reduce(Duration.zero, +)
