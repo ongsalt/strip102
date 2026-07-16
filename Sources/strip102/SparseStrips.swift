@@ -64,11 +64,13 @@ func fillSparseStrip(
 
       for x in xStart...xEnd {
         let t1 = ((Float(tileSize * x) - yBinnedLine.start.x) / dx).clamped(from: 0.0, to: 1.0)
-        let t2 = ((Float(tileSize * (x + 1)) - yBinnedLine.start.x) / dx).clamped(from: 0.0, to: 1.0)
+        let t2 = ((Float(tileSize * (x + 1)) - yBinnedLine.start.x) / dx).clamped(
+          from: 0.0, to: 1.0)
 
         let xBinnedLine = Line(yBinnedLine.sample(t1), yBinnedLine.sample(t2))
-        // print("   - \(xBinnedLine)")
-
+        let tile = Tile(x: UInt16(x), y: UInt16(y), line: xBinnedLine, hasWinding: xBinnedLine.start.y == Float(y * tileSize))
+        tiles.append(tile)
+        print("   - \(tile)")
         if t2 == 1.0 {
           break
         }
