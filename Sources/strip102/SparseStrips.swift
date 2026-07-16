@@ -3,6 +3,10 @@ struct Tile {
   let y: UInt16
   let line: Line
   let hasWinding: Bool
+
+  func sameTile(as other: Tile) -> Bool {
+    other.x == x && other.y == y
+  }
 }
 
 struct Strip {
@@ -44,7 +48,7 @@ func fillSparseStrip(
   let tileSize = 4  // 16; 4 by 4
 
   for line in lines {
-    print(line)
+    // print(line)
     let yStart = Int(line.start.y) / tileSize
     let yEnd = Int(line.end.y) / tileSize
 
@@ -74,7 +78,7 @@ func fillSparseStrip(
           x: UInt16(x), y: UInt16(y), line: xBinnedLine,
           hasWinding: xBinnedLine.start.y == Float(y * tileSize))
         tiles.append(tile)
-        print(" > \(tile)")
+        // print(" > \(tile)")
         if t2 == 1.0 {
           break
         }
@@ -84,14 +88,16 @@ func fillSparseStrip(
         break
       }
     }
-
-    // tiles.append(Tile(x: UInt16(x), y: UInt16(y), line: clipped, hasWinding: hasWinding))
   }
 
   tiles.sort { a, b in
-    if a.x == b.x {
-      return a.y < b.y
+    if a.y == b.y {
+      return a.x < b.x
     }
-    return a.x < b.x
+    return a.y < b.y
+  }
+
+  for t in tiles {
+    print(t)
   }
 }

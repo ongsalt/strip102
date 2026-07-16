@@ -9,9 +9,12 @@ struct RenderedImage {
 
 /// Rasterizes an already-parsed SVG into an RGBA8 pixel buffer. The caller owns `pixels` and must
 /// `deallocate()` it.
-func rasterizeSvg(_ image: UnsafeMutablePointer<NSVGimage>, scale: Float = 1.0, verbose: Bool = true)
-  -> RenderedImage
-{
+func rasterizeSvg(
+  _ image: UnsafeMutablePointer<NSVGimage>,
+  scale: Float = 1.0,
+  algorithm: FillAlgorithm = .default,
+  verbose: Bool = true
+) -> RenderedImage {
   var shape = image.pointee.shapes
   var index = 0
 
@@ -53,7 +56,8 @@ func rasterizeSvg(_ image: UnsafeMutablePointer<NSVGimage>, scale: Float = 1.0, 
         // why tf is it cubic bez
       }
 
-      fillScanline(
+      fill(
+        algorithm,
         path: mPath, color: color, transform: transform, pixels: &span, width: width, height: height)
 
       path = path!.pointee.next
@@ -74,14 +78,14 @@ func parseSvg(_ filename: String) -> UnsafeMutablePointer<NSVGimage> {
   return image
 }
 
-func importSvg(_ filename: String, scale: Float = 1.0) {
+func importSvg(_ filename: String, scale: Float = 1.0, algorithm: FillAlgorithm = .default) {
   let clock = ContinuousClock()
   let start = clock.now
 
   let parsed = parseSvg(filename)
   defer { nsvgDelete(parsed) }
 
-  let image = rasterizeSvg(parsed, scale: scale)
+  let image = rasterizeSvg(parsed, scale: scale, algorithm: algorithm)
 
   let stem = URL(fileURLWithPath: filename).deletingPathExtension().lastPathComponent
   let ppmPath = "\(stem).ppm"
@@ -97,7 +101,12 @@ func importSvg(_ filename: String, scale: Float = 1.0) {
 
 /// Runs the rasterize step `iterations` times against a single parse, with no file I/O, for
 /// benchmarking.
-func benchSvg(_ filename: String, scale: Float = 1.0, iterations: Int = 1000) {
+func benchSvg(
+  _ filename: String,
+  scale: Float = 1.0,
+  algorithm: FillAlgorithm = .default,
+  iterations: Int = 1000
+) {
   let parsed = parseSvg(filename)
   defer { nsvgDelete(parsed) }
 
@@ -107,7 +116,7 @@ func benchSvg(_ filename: String, scale: Float = 1.0, iterations: Int = 1000) {
 
   for _ in 0..<iterations {
     let start = clock.now
-    let image = rasterizeSvg(parsed, scale: scale, verbose: false)
+    let image = rasterizeSvg(parsed, scale: scale, algorithm: algorithm, verbose: false)
     durations.append(clock.now - start)
     image.pixels.deallocate()
   }

@@ -25,6 +25,37 @@ public struct Color8: Sendable, Equatable {
   }
 }
 
+/// Selects which rasterizer `fill` dispatches to.
+public enum FillAlgorithm: String, CaseIterable, Sendable {
+  /// `fillScanline`: analytic (trapezoid) coverage, one active edge list per scanline.
+  case scanline
+  /// `fillSparseStrip`: tile-binned lines gathered into sparse strips.
+  case sparseStrip = "sparse-strip"
+
+  public static let `default`: FillAlgorithm = .scanline
+}
+
+/// Fills `path` with `color` using `algorithm`. All algorithms share this signature; see
+/// `fillScanline` for the `pixels` buffer contract.
+public func fill(
+  _ algorithm: FillAlgorithm = .default,
+  path: borrowing Path,
+  color: borrowing Color,
+  transform: Affine = .identity,
+  pixels: inout MutableSpan<Pixel>,
+  width: Int,
+  height: Int
+) {
+  switch algorithm {
+  case .scanline:
+    fillScanline(
+      path: path, color: color, transform: transform, pixels: &pixels, width: width, height: height)
+  case .sparseStrip:
+    fillSparseStrip(
+      path: path, color: color, transform: transform, pixels: &pixels, width: width, height: height)
+  }
+}
+
 /// Scanline fill with analytic (trapezoid) coverage.
 ///
 /// `pixels` is tightly packed RGBA8, one `Pixel` per pixel, `width * height` long. A byte buffer
