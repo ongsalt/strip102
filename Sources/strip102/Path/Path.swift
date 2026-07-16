@@ -1,7 +1,25 @@
 import Foundation
 
-public typealias Point = SIMD2<Float>
+// MARK: - Curves
 
+/// a cusp keeps failing the flatness test even as the chord shrinks to nothing, so cap the recursion
+
+// MARK: - Segments
+
+// MARK: - Path
+
+/// Unlike the usual command list, a `Path` stores its segments already resolved: every segment
+/// carries its own start point, so a subpath boundary is just a discontinuity between
+/// `segments[i - 1].end` and `segments[i].start` (what a `moveTo` used to produce).
+
+/// Walks the segment list and cuts it into subpaths, transforming each segment on the way out.
+/// A subpath ends when the next segment does not start where this one ended, or when the pen
+/// comes back to the subpath's start point. Subpaths left open are closed with a line, since a
+/// fill only makes sense on a closed contour.
+
+// MARK: - Line
+
+public typealias Point = SIMD2<Float>
 extension SIMD2 where Scalar == Float {
   @inline(__always)
   public func lerp(to other: Self, _ t: Float) -> Self {
@@ -19,9 +37,6 @@ extension SIMD2 where Scalar == Float {
     x * x + y * y
   }
 }
-
-// MARK: - Curves
-
 public struct QuadraticBezierCurve: Sendable, Equatable {
   public var start: Point
   public var control: Point
@@ -89,7 +104,6 @@ public struct QuadraticBezierCurve: Sendable, Equatable {
     walk(self, 0)
   }
 }
-
 public struct CubicBezierCurve: Sendable, Equatable {
   public var start: Point
   public var control1: Point
@@ -160,14 +174,8 @@ public struct CubicBezierCurve: Sendable, Equatable {
     walk(self, 0)
   }
 }
-
-/// a cusp keeps failing the flatness test even as the chord shrinks to nothing, so cap the recursion
 private let maxSubdivisionDepth = 20
-
 public let defaultFlattenTolerance: Float = 0.5
-
-// MARK: - Segments
-
 public enum PathSegment: Sendable, Equatable {
   case line(Line)
   case quadratic(QuadraticBezierCurve)
@@ -246,17 +254,10 @@ public enum PathSegment: Sendable, Equatable {
     }
   }
 }
-
 public enum FillRule: Sendable, Equatable {
   case nonZero
   case evenOdd
 }
-
-// MARK: - Path
-
-/// Unlike the usual command list, a `Path` stores its segments already resolved: every segment
-/// carries its own start point, so a subpath boundary is just a discontinuity between
-/// `segments[i - 1].end` and `segments[i].start` (what a `moveTo` used to produce).
 public struct Path: Sendable, Equatable {
   public var segments: [PathSegment]
   public var fillRule: FillRule
@@ -325,7 +326,6 @@ public struct Path: Sendable, Equatable {
     return out
   }
 }
-
 public struct SubPath: Sendable, Equatable {
   public var segments: [PathSegment]
 
@@ -367,11 +367,6 @@ public struct SubPath: Sendable, Equatable {
     return out
   }
 }
-
-/// Walks the segment list and cuts it into subpaths, transforming each segment on the way out.
-/// A subpath ends when the next segment does not start where this one ended, or when the pen
-/// comes back to the subpath's start point. Subpaths left open are closed with a line, since a
-/// fill only makes sense on a closed contour.
 public struct SubPathSequence: Sequence, IteratorProtocol {
   private let segments: [PathSegment]
   private let transform: Affine
@@ -409,9 +404,6 @@ public struct SubPathSequence: Sequence, IteratorProtocol {
     return SubPath(segments: out)
   }
 }
-
-// MARK: - Line
-
 public struct Line: Sendable, Equatable {
   public var start: Point
   public var end: Point

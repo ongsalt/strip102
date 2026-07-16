@@ -21,10 +21,33 @@ struct strip102: ParsableCommand {
     }
 
     func run() {
-        if bench {
-            benchSvg(file, scale: scale)
-        } else {
-            importSvg(file, scale: scale)
-        }
+        idk()
+        // if bench {
+        //     benchSvg(file, scale: scale)
+        // } else {
+        //     importSvg(file, scale: scale)
+        // }
+    }
+
+    func idk() {
+        var path = Path()
+        // path.quad(to: Point(100, 100), control: Point(0, 100))
+        path.move(to: Point(1, 1))
+        path.line(to: Point(15, 7))
+
+        let width = 100
+        let height = 100
+        let pixels = UnsafeMutableBufferPointer<Pixel>
+            .allocate(capacity: width * height)
+
+        var span = pixels.mutableSpan
+        fillSparseStrip(
+            path: path,
+            color: .red,
+            pixels: &span,
+            width: width,
+            height: height
+        )
+
     }
 }
