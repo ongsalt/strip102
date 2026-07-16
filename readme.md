@@ -15,6 +15,8 @@ bench tiger.svg x1000: total=13.91991820s, avg=13.919918ms, min=13.522885ms, max
 
 A bit faster than the [rust version](https://github.com/ongsalt/strip101) but its unfair cuz the rust version offer js canvas like path recording api and store it as `Vec<PathCommand>` rather than `Vec<PathSegment>`.
 
+and note that this is just a shitty poc there are a lot of optimization to be done (for example: [sparse strips](https://ethz.ch/content/dam/ethz/special-interest/infk/inst-pls/plf-dam/documents/StudentProjects/MasterTheses/2025-Laurenz-Description.pdf)). we dont even have an option for stroking. 
+
 ## Spec
 
 ```
