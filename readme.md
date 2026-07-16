@@ -4,7 +4,6 @@
 swift build -c release -Xswiftc -g
 perf record --call-graph dwarf .build/release/strip102 tiger.svg --bench
 perf script | ./FlameGraph/stackcollapse-perf.pl | swift demangle | ./FlameGraph/flamegraph.pl > flame.svg
-
 ```
 
 # Benchmark
@@ -12,8 +11,12 @@ perf script | ./FlameGraph/stackcollapse-perf.pl | swift demangle | ./FlameGraph
 ```
 bench tiger.svg x1000: total=13.91991820s, avg=13.919918ms, min=13.522885ms, max=22.299697ms
 ```
+## Cairo
+```
+bench tiger.svg x1000: total=13.12967282s, avg=13.129673ms, min=12.002300ms, max=19.617795ms
+```
 
-A bit faster than the [rust version](https://github.com/ongsalt/strip101) but its unfair cuz the rust version offer js canvas like path recording api and store it as `Vec<PathCommand>` rather than `Vec<PathSegment>`.
+`strip102` is a bit faster than the [rust version](https://github.com/ongsalt/strip101) but its unfair cuz the rust version offer js canvas like path recording api and store it as `Vec<PathCommand>` rather than `Vec<PathSegment>`.
 
 and note that this is just a shitty poc there are a lot of optimization to be done (for example: [sparse strips](https://ethz.ch/content/dam/ethz/special-interest/infk/inst-pls/plf-dam/documents/StudentProjects/MasterTheses/2025-Laurenz-Description.pdf)). we dont even have an option for stroking. 
 
