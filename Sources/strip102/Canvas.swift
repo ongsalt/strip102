@@ -124,17 +124,16 @@ public struct Canvas: ~Copyable {
 
   // MARK: - Output
 
-  /// Flushes, then writes the pixels to `path` as a binary PPM. Flushing first so a pending draw
+  /// Flushes, then writes the pixels to `path` as a binary PAM. Flushing first so a pending draw
   /// cannot silently miss the file.
   public mutating func save(to path: String) throws {
     flush()
-    try writePpm(pixels: pixels.span, width: width, height: height, to: path)
+    try writePam(pixels: pixels.span, width: width, height: height, to: path)
 
     let stem = URL(fileURLWithPath: path).deletingPathExtension().lastPathComponent
-    let ppmPath = "\(stem).ppm"
 
     #if !os(Windows)
-      convertToPng(ppmPath: ppmPath, pngPath: "\(stem).png")
+      convertToPng(ppmPath: path, pngPath: "\(stem).png")
     #endif  // !os(Windows)
 
   }

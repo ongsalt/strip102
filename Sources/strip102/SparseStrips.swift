@@ -70,22 +70,60 @@ func drawWideTile(
   x: Int,
   y: Int,
   ops: Span<WideTileDrawOp>,
-  pixels: inout MutableSpan<Pixel>, // row major tho
+  coverageBuffer: CoverageBuffer,
+  pixels: inout MutableSpan<Pixel>,  // row major tho
   width: Int,
   height: Int
 ) {
+  let tileStartX = x * 256
+  let tileStartY = y * 4
+  let rowCount = min(4, height - tileStartY)
+  guard rowCount > 0 else { return }
+
   for i in ops.indices {
     switch ops[i] {
     case .solid(let x, let w, let color):
-      // simd blend ???
+      let startX = tileStartX + Int(x)
+      let endX = min(startX + Int(w), width)
+      guard startX < endX else { continue }
+
       if color.alpha == 1.0 {
-        // fill it
+        let pixel: Pixel = [
+          UInt8(color.red), UInt8(color.green), UInt8(color.blue), 255,
+        ]
+        for row in 0..<rowCount {
+          let rowStart = (tileStartY + row) * width
+          for px in startX..<endX {
+            pixels[unchecked: rowStart + px] = pixel
+          }
+        }
+      } else {
+        let source = Color8(color)
+        for row in 0..<rowCount {
+          let rowStart = (tileStartY + row) * width
+          for px in startX..<endX {
+            blend(source, &pixels[unchecked: rowStart + px], 1.0)
+          }
+        }
       }
 
     case .aa(let x, let w, let color, let index, let coverageOffset):
-      do {}
-    }
+      let coverage = coverageBuffer.coverages[Int(index)].buffer
+      let startX = tileStartX + Int(x)
+      let endX = min(startX + Int(w), width)
+      guard startX < endX else { continue }
 
+      let source = Color8(color)
+      for column in 0..<(endX - startX) {
+        // column major, 4 rows per pixel column
+        let columnStart = (Int(coverageOffset) + column) * 4
+        for row in 0..<rowCount {
+          // TODO: fill rule, this is nonzero
+          let opacity = min(abs(Float(coverage[columnStart + row])), 1.0)
+          blend(source, &pixels[unchecked: (tileStartY + row) * width + startX + column], opacity)
+        }
+      }
+    }
   }
 }
 
@@ -296,29 +334,29 @@ func computeCoverage(
         let tileStartX = Float(tiles[i].x) * 4
         let line = yBinnedLine.crop(x: tileStartX + Float(lx)...tileStartX + Float(lx + 1))
 
-        // crop line into
-        let dy = Float16(line.end.y - line.start.y)
-        let xMid = Float16(line.start.x + line.end.x) / 2 - Float16(tileStartX)
+        // crop line into; math in f32, f16 only at the store
+        let dy = line.end.y - line.start.y
+        let xMid = (line.start.x + line.end.x) / 2 - tileStartX
 
         //
         // coverage
         let offset = Int(tiles[i].x - tiles[0].x) * tileSize * tileSize + lx * tileSize + ly
         // print(" - \(offset), \(buffer.count)")
-        scratchBuffer[offset] += dy
+        scratchBuffer[offset] = Float16(Float(scratchBuffer[offset]) + dy)
         // trapezoid, see https://www.youtube.com/watch?v=B9bztU1sTFA
         // fill
-        buffer[offset] += dy * (1 - xMid)
+        buffer[offset] = Float16(Float(buffer[offset]) + dy * (1 - xMid))
       }
     }
   }
 
   let fill = UnsafeMutablePointer<SIMD4<Float16>>(OpaquePointer(buffer.baseAddress))!
   let coverage = UnsafeMutablePointer<SIMD4<Float16>>(OpaquePointer(scratchBuffer.baseAddress))!
-  var acc: SIMD4<Float16> = .zero
+  var acc: SIMD4<Float> = .zero
 
   for x in tiles[0].x * 4..<tiles[tiles.count - 1].x * 4 {
-    fill[Int(x)] += acc
-    acc += coverage[Int(x)]
+    fill[Int(x)] = SIMD4<Float16>(SIMD4<Float>(fill[Int(x)]) + acc)
+    acc += SIMD4<Float>(coverage[Int(x)])
   }
 
 }

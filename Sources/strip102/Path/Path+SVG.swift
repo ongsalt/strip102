@@ -80,9 +80,9 @@ func importSvg(_ filename: String, scale: Float = 1.0, algorithm: FillAlgorithm 
   var canvas = rasterizeSvg(parsed, scale: scale, algorithm: algorithm)
 
   let stem = URL(fileURLWithPath: filename).deletingPathExtension().lastPathComponent
-  let ppmPath = "\(stem).ppm"
+  let pamPath = "\(stem).pam"
 
-  try! canvas.save(to: ppmPath)
+  try! canvas.save(to: pamPath)
 
   print("importSvg(\(filename)) took \(clock.now - start)")
 }
@@ -148,16 +148,18 @@ func convertToPng(ppmPath: String, pngPath: String) {
   }
 }
 
-/// Writes a binary PPM (P6), dropping alpha since PPM has no alpha channel.
-func writePpm(pixels: borrowing Span<Pixel>, width: Int, height: Int, to filename: String) throws {
+/// Writes a binary PAM (P7, RGB_ALPHA). Unlike PPM, PAM keeps the alpha channel, so the AA
+/// living in partial coverage makes it into the file.
+func writePam(pixels: borrowing Span<Pixel>, width: Int, height: Int, to filename: String) throws {
   precondition(pixels.count >= width * height, "pixel buffer smaller than the image")
 
-  var data = Data("P6\n\(width) \(height)\n255\n".utf8)
-  data.reserveCapacity(data.count + width * height * 3)
+  var data = Data(
+    "P7\nWIDTH \(width)\nHEIGHT \(height)\nDEPTH 4\nMAXVAL 255\nTUPLTYPE RGB_ALPHA\nENDHDR\n".utf8)
+  data.reserveCapacity(data.count + width * height * 4)
 
   for i in 0..<(width * height) {
     let pixel = pixels[i]
-    data.append(contentsOf: [pixel[0], pixel[1], pixel[2]])
+    data.append(contentsOf: [pixel[0], pixel[1], pixel[2], pixel[3]])
   }
 
   try data.write(to: URL(fileURLWithPath: filename))
