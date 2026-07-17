@@ -39,6 +39,7 @@ struct strip102: ParsableCommand {
     }
 
     func idk(algorithm: FillAlgorithm) {
+
         var path = Path()
         // path.quad(to: Point(100, 100), control: Point(0, 100))
         path.move(to: Point(1, 2))

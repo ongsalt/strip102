@@ -17,34 +17,32 @@ func drawSparseSprips(
   let coverageBuffer = CoverageBuffer(tileSize: tileSize, tileCount: 1024 * 128)
 
   // index = path index
-  let strips: [[Strip]] = Array(capacity: ops.count) { out in
+  // Array(unsafeUninitializedCapacity: Int, initializingWith: (_ buffer: inout UnsafeMutableBufferPointer<Element>, _ initializedCount: inout Int) throws(Error) -> Void)
+  let strips: [[Strip]] = Array(unsafeUninitializedCapacity: ops.count) { out, wrote in
     let next = Atomic(0)
-    out.withUnsafeMutableBufferPointer { buffer, wrote in
-      wrote = ops.count
-      nonisolated(unsafe) let buffer = buffer
+    wrote = ops.count
+    nonisolated(unsafe) let buffer = out
+    DispatchQueue.concurrentPerform(iterations: coreCount) { _ in
+      // per thread
+      let scratchBuffer: UnsafeMutableBufferPointer<Float16> = .allocate(
+        capacity: tileSize * tileSize * 1024)
 
-      DispatchQueue.concurrentPerform(iterations: coreCount) { index in
-        // per thread
-        let scratchBuffer: UnsafeMutableBufferPointer<Float16> = .allocate(
-          capacity: tileSize * tileSize * 1024)
+      // pull tasks
+      while true {
+        let i = next.add(1, ordering: .relaxed).oldValue
+        guard i < ops.count else { break }
 
-        // pull tasks
-        while true {
-          let i = next.add(1, ordering: .relaxed).oldValue
-          guard i < ops.count else { break }
+        let lines = ops[i].path.breakIntoLines(transform: ops[i].transform, tolerance: 0.25)
+        let tiles = generateTiles(lines: lines)
 
-          let lines = ops[i].path.breakIntoLines(transform: ops[i].transform, tolerance: 0.25)
-          let tiles = generateTiles(lines: lines)
+        // also generate coverage
+        let strips = generateStrips(
+          tiles: tiles.span,
+          coverageBuffer: coverageBuffer,
+          scratchBuffer: scratchBuffer
+        )
 
-          // also generate coverage
-          let strips = generateStrips(
-            tiles: tiles.span,
-            coverageBuffer: coverageBuffer,
-            scratchBuffer: scratchBuffer
-          )
-
-          buffer.initializeElement(at: index, to: strips)
-        }
+        buffer.initializeElement(at: i, to: strips)
       }
     }
   }
@@ -61,9 +59,71 @@ func drawSparseSprips(
 
   for i in ops.indices {
     // generate command in painter order
-    // let wideTileIndex =
+    let strips = strips[i]
+    for strip in strips {
+      // in pixel
+      // strip.x * 4
+      var coverageW =
+        coverageBuffer.coverages[Int(strip.coverageIndex)].buffer.count / (tileSize * tileSize)
+      var x: UInt16 = (strip.x * UInt16(tileSize)) % 16  // % 256, but count in tile
+
+      // strip may got split
+      let wideTileXStart = Int(strip.x * 4 / 256)
+      let wideTileXEnd = Int(strip.x) + coverageW * 4 / 256
+      let wideTileY = Int(strip.y)
+
+      for wideTileX in wideTileXStart...wideTileXEnd {
+        let wideTileIndex = wideTileX + wideTileY * wideTileXCount
+        let w = max(coverageW, 256)
+        // TODO: verify this
+        // in pixel, but it will always be divisible by 16 tho
+
+        if wideTileIndex >= wideTileCommands.count {
+          break
+        }
+
+        wideTileCommands[wideTileIndex].append(
+          WideTileDrawOp.aa(
+            x: x,
+            w: UInt16(w / tileSize),  // it tile unit
+            ops[i].color,
+            index: UInt(strip.coverageIndex),
+            offset: UInt16(0)
+          )
+        )
+        // x will always be 0 in later iteration
+        x = 0
+        coverageW -= 256
+      }
+    }
   }
 
+  // let total = wideTileCommands.lazy.map(\.count).reduce(0, +)
+  // print(wideTileCommands[214].count)
+
+  let _wideTileCommands = wideTileCommands
+
+  // executing thos
+  let next = Atomic(0)
+  pixels.withUnsafeMutableBufferPointer { buffer in
+    nonisolated(unsafe) let buffer = buffer
+    DispatchQueue.concurrentPerform(iterations: coreCount) { _ in
+      // pull tasks
+      while true {
+        let i = next.add(1, ordering: .relaxed).oldValue
+        guard i < ops.count else { break }
+
+        let commands = _wideTileCommands[i]
+        let x = i % wideTileXCount
+        let y = i / wideTileXCount
+
+        drawWideTile(
+          x: x, y: y, ops: commands.span, coverageBuffer: coverageBuffer,
+          pixels: buffer.baseAddress!,
+          width: width, height: height)
+      }
+    }
+  }
 }
 
 func drawWideTile(
@@ -71,7 +131,7 @@ func drawWideTile(
   y: Int,
   ops: Span<WideTileDrawOp>,
   coverageBuffer: CoverageBuffer,
-  pixels: inout MutableSpan<Pixel>,  // row major tho
+  pixels: UnsafeMutablePointer<Pixel>,  // row major tho
   width: Int,
   height: Int
 ) {
@@ -84,30 +144,30 @@ func drawWideTile(
     switch ops[i] {
     case .solid(let x, let w, let color):
       let startX = tileStartX + Int(x)
-      let endX = min(startX + Int(w), width)
-      guard startX < endX else { continue }
+    // let endX = min(startX + Int(w), width)
+    // guard startX < endX else { continue }
 
-      if color.alpha == 1.0 {
-        let pixel: Pixel = [
-          UInt8(color.red), UInt8(color.green), UInt8(color.blue), 255,
-        ]
-        for row in 0..<rowCount {
-          let rowStart = (tileStartY + row) * width
-          for px in startX..<endX {
-            pixels[unchecked: rowStart + px] = pixel
-          }
-        }
-      } else {
-        let source = Color8(color)
-        for row in 0..<rowCount {
-          let rowStart = (tileStartY + row) * width
-          for px in startX..<endX {
-            blend(source, &pixels[unchecked: rowStart + px], 1.0)
-          }
-        }
-      }
+    // if color.alpha == 1.0 {
+    //   let pixel: Pixel = [
+    //     UInt8(color.red), UInt8(color.green), UInt8(color.blue), 255,
+    //   ]
+    //   for row in 0..<rowCount {
+    //     let rowStart = (tileStartY + row) * width
+    //     for px in startX..<endX {
+    //       pixels[rowStart + px] = pixel
+    //     }
+    //   }
+    // } else {
+    //   let source = Color8(color)
+    //   for row in 0..<rowCount {
+    //     let rowStart = (tileStartY + row) * width
+    //     for px in startX..<endX {
+    //       blend(source, &pixels[rowStart + px], 1.0)
+    //     }
+    //   }
+    // }
 
-    case .aa(let x, let w, let color, let index, let coverageOffset):
+    case .aa(let x, let w, let color, let index, let offset):
       let coverage = coverageBuffer.coverages[Int(index)].buffer
       let startX = tileStartX + Int(x)
       let endX = min(startX + Int(w), width)
@@ -116,11 +176,12 @@ func drawWideTile(
       let source = Color8(color)
       for column in 0..<(endX - startX) {
         // column major, 4 rows per pixel column
-        let columnStart = (Int(coverageOffset) + column) * 4
+        let columnStart = (Int(offset) + column) * 4
+        print(coverage,  coverage.count, columnStart)
         for row in 0..<rowCount {
           // TODO: fill rule, this is nonzero
           let opacity = min(abs(Float(coverage[columnStart + row])), 1.0)
-          blend(source, &pixels[unchecked: (tileStartY + row) * width + startX + column], opacity)
+          blend(source, &pixels[(tileStartY + row) * width + startX + column], opacity)
         }
       }
     }
@@ -227,7 +288,7 @@ struct Region {
 class CoverageBuffer: @unchecked Sendable {
   let buffer: UnsafeMutableBufferPointer<Float16>
   let tileSize: Int
-  let current: Atomic<Int> = Atomic(0)
+  let current: Mutex<Int> = Mutex(0)
 
   // not thread safe
   var coverages: [Coverage] = []
@@ -241,14 +302,15 @@ class CoverageBuffer: @unchecked Sendable {
   // each coverage is column major for simd4
   func allocate(_ width: Int) -> Coverage {
     let count = width * tileSize * tileSize
-    let values = current.add(count, ordering: .relaxed)
-
-    let newBuffer = UnsafeMutableBufferPointer(
-      start: buffer.baseAddress! + values.oldValue, count: count
-    )
-    let c = Coverage(index: coverages.count, buffer: newBuffer)
-    coverages.append(c)
-    return c
+    return current.withLock {
+      let prev = $0
+      $0 += 1
+      let newBuffer =
+        UnsafeMutableBufferPointer(start: buffer.baseAddress! + prev, count: count)
+      let c = Coverage(index: coverages.count, buffer: newBuffer)
+      self.coverages.append(c)
+      return c
+    }
   }
 
   deinit {
@@ -256,7 +318,7 @@ class CoverageBuffer: @unchecked Sendable {
   }
 }
 
-struct Coverage {
+struct Coverage: @unchecked Sendable {
   let index: Int
   let buffer: UnsafeMutableBufferPointer<Float16>
 }
@@ -363,7 +425,7 @@ func computeCoverage(
 
 enum WideTileDrawOp {
   case solid(x: UInt16, w: UInt16, Color)
-  case aa(x: UInt16, w: UInt16, Color, index: UInt, coverageOffset: UInt16 = 0)
+  case aa(x: UInt16, w: UInt16, Color, index: UInt, offset: UInt16)
 }
 
 extension Line {
