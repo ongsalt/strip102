@@ -85,10 +85,6 @@ func importSvg(_ filename: String, scale: Float = 1.0, algorithm: FillAlgorithm 
   try! canvas.save(to: ppmPath)
 
   print("importSvg(\(filename)) took \(clock.now - start)")
-
-  #if !os(Windows) 
-  convertToPng(ppmPath: ppmPath, pngPath: "\(stem).png")
-  #endif
 }
 
 /// Runs the rasterize step `iterations` times against a single parse, with no file I/O, for

@@ -16,7 +16,8 @@ struct strip102: ParsableCommand {
     @Option(name: .shortAndLong, help: "Output resolution multiplier, e.g. 2 for 2x.")
     var scale: Float = 1.0
 
-    @Option(name: [.customShort("f"), .customLong("fill")], help: "Fill algorithm to rasterize with.")
+    @Option(
+        name: [.customShort("f"), .customLong("fill")], help: "Fill algorithm to rasterize with.")
     var fillAlgorithm: FillAlgorithm = .default
 
     func validate() throws {
@@ -26,12 +27,15 @@ struct strip102: ParsableCommand {
     }
 
     func run() {
-        idk(algorithm: fillAlgorithm)
-        // if bench {
-        //     benchSvg(file, scale: scale, algorithm: fillAlgorithm)
-        // } else {
-        //     importSvg(file, scale: scale, algorithm: fillAlgorithm)
-        // }
+        if file == "triangle" {
+            idk(algorithm: fillAlgorithm)
+        } else {
+            if bench {
+                benchSvg(file, scale: scale, algorithm: fillAlgorithm)
+            } else {
+                importSvg(file, scale: scale, algorithm: fillAlgorithm)
+            }
+        }
     }
 
     func idk(algorithm: FillAlgorithm) {
@@ -44,5 +48,6 @@ struct strip102: ParsableCommand {
         var canvas = Canvas(width: 100, height: 100, fillAlgorithm: algorithm)
         canvas.draw(path, color: .red)
         canvas.flush()
+        try! canvas.save(to: "idk.ppm")
     }
 }

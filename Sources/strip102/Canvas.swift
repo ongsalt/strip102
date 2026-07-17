@@ -1,3 +1,5 @@
+import Foundation
+
 /// A recorded, not-yet-rasterized draw. The canvas' transform is baked in when the op is recorded,
 /// so later transform changes do not retroactively move it.
 struct DrawOp {
@@ -114,7 +116,7 @@ public struct Canvas: ~Copyable {
         fillScanline(path: op.path, color: op.color, pixels: &span, width: width, height: height)
       }
     } else {
-      drawSparseSprips(ops: ops, pixels: &span, width: width, height: height)      
+      drawSparseSprips(ops: ops, pixels: &span, width: width, height: height)
     }
 
     ops.removeAll(keepingCapacity: true)
@@ -127,5 +129,13 @@ public struct Canvas: ~Copyable {
   public mutating func save(to path: String) throws {
     flush()
     try writePpm(pixels: pixels.span, width: width, height: height, to: path)
+
+    let stem = URL(fileURLWithPath: path).deletingPathExtension().lastPathComponent
+    let ppmPath = "\(stem).ppm"
+
+    #if !os(Windows)
+      convertToPng(ppmPath: ppmPath, pngPath: "\(stem).png")
+    #endif  // !os(Windows)
+
   }
 }
