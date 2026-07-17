@@ -14,19 +14,17 @@ func drawSparseSprips(
   let tileSize = 4
 
   let coreCount = getRealCoreCount()
-  nonisolated(unsafe) let coverageBuffers: [CoverageBuffer] = (0..<coreCount).map { _ in
-    CoverageBuffer(tileSize: tileSize)
-  }
+  let coverageBuffer = CoverageBuffer(tileSize: tileSize, tileCount: 1024 * 128)
 
-  let a: [Int] = Array(capacity: ops.count) { out in
+  // index = path index
+  let strips: [[Strip]] = Array(capacity: ops.count) { out in
     let next = Atomic(0)
     out.withUnsafeMutableBufferPointer { buffer, wrote in
       wrote = ops.count
       nonisolated(unsafe) let buffer = buffer
 
       DispatchQueue.concurrentPerform(iterations: coreCount) { index in
-        // per thread data
-        let coverageBuffer: CoverageBuffer = coverageBuffers[index]
+        // per thread
         let scratchBuffer: UnsafeMutableBufferPointer<Float16> = .allocate(
           capacity: tileSize * tileSize * 1024)
 
@@ -38,22 +36,57 @@ func drawSparseSprips(
           let lines = ops[i].path.breakIntoLines(transform: ops[i].transform, tolerance: 0.25)
           let tiles = generateTiles(lines: lines)
 
-          for t in tiles {
-            print(t)
-          }
           // also generate coverage
           let strips = generateStrips(
-            tiles: tiles.span, 
-            coverageBuffer: coverageBuffer, 
+            tiles: tiles.span,
+            coverageBuffer: coverageBuffer,
             scratchBuffer: scratchBuffer
           )
 
-          buffer[i] = 12
+          buffer.initializeElement(at: index, to: strips)
         }
       }
     }
   }
 
+  print(strips)
+
+  // generate per WideTile (screen space) draw commands ??
+  let wideTileXCount = Int((Float(width) / 256).rounded(.up))
+  let wideTileYCount = Int((Float(height) / 4).rounded(.up))
+
+  // wide tile is in row major for conveniece
+  var wideTileCommands: [[WideTileDrawOp]] = Array(
+    repeating: [], count: wideTileXCount * wideTileYCount)
+
+  for i in ops.indices {
+    // generate command in painter order
+    // let wideTileIndex =
+  }
+
+}
+
+func drawWideTile(
+  x: Int,
+  y: Int,
+  ops: Span<WideTileDrawOp>,
+  pixels: inout MutableSpan<Pixel>, // row major tho
+  width: Int,
+  height: Int
+) {
+  for i in ops.indices {
+    switch ops[i] {
+    case .solid(let x, let w, let color):
+      // simd blend ???
+      if color.alpha == 1.0 {
+        // fill it
+      }
+
+    case .aa(let x, let w, let color, let index, let coverageOffset):
+      do {}
+    }
+
+  }
 }
 
 struct Tile {
@@ -153,28 +186,29 @@ struct Region {
 }
 
 // TODO: bump allocator, per thread?
-class CoverageBuffer {
+class CoverageBuffer: @unchecked Sendable {
   let buffer: UnsafeMutableBufferPointer<Float16>
   let tileSize: Int
-  var current: Int = 0
+  let current: Atomic<Int> = Atomic(0)
 
+  // not thread safe
   var coverages: [Coverage] = []
 
   init(tileSize: Int, tileCount: Int = 1024 * 32) {
     self.tileSize = tileSize
     buffer = .allocate(capacity: tileCount * tileSize * tileSize)
+    buffer.initialize(repeating: 0.0)
   }
 
   // each coverage is column major for simd4
   func allocate(_ width: Int) -> Coverage {
-    if width + current > buffer.count {
-      fatalError("out of memory")
-    }
-    defer {
-      current += width
-    }
+    let count = width * tileSize * tileSize
+    let values = current.add(count, ordering: .relaxed)
 
-    let c = Coverage(index: coverages.count, buffer: buffer.extracting(current..<current + width))
+    let newBuffer = UnsafeMutableBufferPointer(
+      start: buffer.baseAddress! + values.oldValue, count: count
+    )
+    let c = Coverage(index: coverages.count, buffer: newBuffer)
     coverages.append(c)
     return c
   }
@@ -218,13 +252,18 @@ func generateStrips(
       }
     }
 
+    // zeroing only needed
+    let stripWidth = Int(tiles[i].x - tiles[start].x + 1)
+    scratchBuffer.extracting(0..<stripWidth * coverageBuffer.tileSize * coverageBuffer.tileSize)
+      .update(repeating: 0.0)
+    // scratchBuffer.initialize(repeating: 0.0)
+
     // allocate buffer, known size
     let coverage = coverageBuffer.allocate(i - start + 1)
     computeCoverage(
-      tiles: tiles, 
-      start: start, 
-      end: i, 
-      buffer: coverage.buffer, 
+      tiles: tiles.extracting(start...i),
+      tileSize: coverageBuffer.tileSize,
+      buffer: coverage.buffer,
       scratchBuffer: scratchBuffer
     )
 
@@ -241,41 +280,52 @@ func generateStrips(
 func computeCoverage(
   tiles: Span<Tile>,
   // inclusive
-  start: Int,
-  end: Int,
-  buffer: UnsafeMutableBufferPointer<Float16>,
-  scratchBuffer: UnsafeMutableBufferPointer<Float16>
+  tileSize: Int,
+  buffer: UnsafeMutableBufferPointer<Float16>,  // fill
+  scratchBuffer: UnsafeMutableBufferPointer<Float16>  // coverage
 ) {
-  let actualY = Float(tiles[0].y) * 4
-  // h = 4
+  let stripStartY = Float(tiles[0].y) * 4
 
-  // for each line in a tile
-  for i in 0...tiles.count {
+  for i in tiles.indices {
     let line = tiles[unchecked: i].line
 
-    for y in 0...4 {
-      let yBinnedLine = line.crop(y: actualY + Float(y)...actualY + Float(y + 1))
+    for ly in 0..<4 {
+      let yBinnedLine = line.crop(y: stripStartY + Float(ly)...stripStartY + Float(ly + 1))
 
-      for x in 0...4 {
-        let actualX = Float(tiles[i].x) * 4
-        let line = yBinnedLine.crop(x: actualX + Float(x)...actualX + Float(x + 1))
+      for lx in 0..<4 {
+        let tileStartX = Float(tiles[i].x) * 4
+        let line = yBinnedLine.crop(x: tileStartX + Float(lx)...tileStartX + Float(lx + 1))
 
         // crop line into
-        let dy = line.end.y - line.start.y
-        let xMid = (line.start.x + line.end.x) / 2 - Float(x)
+        let dy = Float16(line.end.y - line.start.y)
+        let xMid = Float16(line.start.x + line.end.x) / 2 - Float16(tileStartX)
 
-        // x is clamped to 0..<w and the tables are w long
-        scratchBuffer[unchecked: x * 4 + y] += dy
+        //
+        // coverage
+        let offset = Int(tiles[i].x - tiles[0].x) * tileSize * tileSize + lx * tileSize + ly
+        // print(" - \(offset), \(buffer.count)")
+        scratchBuffer[offset] += dy
         // trapezoid, see https://www.youtube.com/watch?v=B9bztU1sTFA
-        buffer[unchecked: x * 4 + y] += dy * (1 - xMid)
+        // fill
+        buffer[offset] += dy * (1 - xMid)
       }
     }
   }
+
+  let fill = UnsafeMutablePointer<SIMD4<Float16>>(OpaquePointer(buffer.baseAddress))!
+  let coverage = UnsafeMutablePointer<SIMD4<Float16>>(OpaquePointer(scratchBuffer.baseAddress))!
+  var acc: SIMD4<Float16> = .zero
+
+  for x in tiles[0].x * 4..<tiles[tiles.count - 1].x * 4 {
+    fill[Int(x)] += acc
+    acc += coverage[Int(x)]
+  }
+
 }
 
 enum WideTileDrawOp {
-  case solid(x: UInt, Color)
-  case aa(x: UInt, Color, index: Int)
+  case solid(x: UInt16, w: UInt16, Color)
+  case aa(x: UInt16, w: UInt16, Color, index: UInt, coverageOffset: UInt16 = 0)
 }
 
 extension Line {

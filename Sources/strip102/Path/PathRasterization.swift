@@ -4,7 +4,7 @@ import Foundation
 public typealias Pixel = [4 of UInt8]
 
 /// RGBA8 straight-alpha color, quantized straight from `Color` with no linear-light conversion.
-public struct Color8: Sendable, Equatable {
+public struct Color8: Sendable, Equatable, Hashable {
   public var red: UInt8
   public var green: UInt8
   public var blue: UInt8
