@@ -26,12 +26,12 @@ struct strip102: ParsableCommand {
     }
 
     func run() {
-        // idk(algorithm: fillAlgorithm)
-        if bench {
-            benchSvg(file, scale: scale, algorithm: fillAlgorithm)
-        } else {
-            importSvg(file, scale: scale, algorithm: fillAlgorithm)
-        }
+        idk(algorithm: fillAlgorithm)
+        // if bench {
+        //     benchSvg(file, scale: scale, algorithm: fillAlgorithm)
+        // } else {
+        //     importSvg(file, scale: scale, algorithm: fillAlgorithm)
+        // }
     }
 
     func idk(algorithm: FillAlgorithm) {

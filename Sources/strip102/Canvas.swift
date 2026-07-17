@@ -109,16 +109,12 @@ public struct Canvas: ~Copyable {
     guard !ops.isEmpty else { return }
 
     var span = pixels.mutableSpan
-    for op in ops {
-      fill(
-        fillAlgorithm,
-        path: op.path,
-        color: op.color,
-        transform: op.transform,
-        pixels: &span,
-        width: width,
-        height: height
-      )
+    if self.fillAlgorithm == .scanline {
+      for op in ops {
+        fillScanline(path: op.path, color: op.color, pixels: &span, width: width, height: height)
+      }
+    } else {
+      drawSparseSprips(ops: ops, pixels: &span, width: width, height: height)      
     }
 
     ops.removeAll(keepingCapacity: true)

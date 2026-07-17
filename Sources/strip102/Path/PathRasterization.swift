@@ -35,27 +35,7 @@ public enum FillAlgorithm: String, CaseIterable, Sendable {
   public static let `default`: FillAlgorithm = .scanline
 }
 
-/// Fills `path` with `color` using `algorithm`. All algorithms share this signature; see
-/// `fillScanline` for the `pixels` buffer contract.
-public func fill(
-  _ algorithm: FillAlgorithm = .default,
-  path: borrowing Path,
-  color: borrowing Color,
-  transform: Affine = .identity,
-  pixels: inout MutableSpan<Pixel>,
-  width: Int,
-  height: Int
-) {
-  switch algorithm {
-  case .scanline:
-    fillScanline(
-      path: path, color: color, transform: transform, pixels: &pixels, width: width, height: height)
-  case .sparseStrip:
-    fillSparseStrip(
-      path: path, color: color, transform: transform, pixels: &pixels, width: width, height: height)
-  }
-}
-
+// To be fair, this one can also `breakIntoLines` in parallel
 /// Scanline fill with analytic (trapezoid) coverage.
 ///
 /// `pixels` is tightly packed RGBA8, one `Pixel` per pixel, `width * height` long. A byte buffer
