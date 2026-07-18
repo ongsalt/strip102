@@ -106,13 +106,13 @@ func drawSparseSprips(
           let filledWidth = min(fillEnd - fillX, 64 - localX)
           let fillWideTileIndex = fillWideTileX + wideTileY * wideTileXCount
           if fillWideTileIndex < wideTileCommands.count {
-            wideTileCommands[fillWideTileIndex].append(
-              WideTileDrawOp.solid(
-                x: UInt16(localX),
-                w: UInt16(filledWidth),
-                ops[i].color
-              )
-            )
+            // wideTileCommands[fillWideTileIndex].append(
+            //   WideTileDrawOp.solid(
+            //     x: UInt16(localX),
+            //     w: UInt16(filledWidth),
+            //     ops[i].color
+            //   )
+            // )
           }
           fillX += filledWidth
         }
@@ -296,7 +296,7 @@ func generateTiles(lines: consuming [Line]) -> [Tile] {
           x: UInt16(x),
           y: UInt16(y),
           line: xBinnedLine,
-          hasWinding: abs(xBinnedLine.start.y - Float(y * tileSize)) < 0.001
+          hasWinding: abs(min(xBinnedLine.start.y, xBinnedLine.end.y) - Float(y * tileSize)) < 0.001
         )
         tiles.append(tile)
         // print(" > \(tile)")
@@ -401,7 +401,7 @@ func generateStrips(
   while i < tiles.count {
     if lastY != tiles[i].y {
       winding = 0
-      print("reset winding \(winding) \(tiles[i])")
+      // print("reset winding \(winding) \(tiles[i])")
     }
     lastY = Int(tiles[i].y)
 
@@ -413,7 +413,7 @@ func generateStrips(
     while i < tiles.count - 1 {
       if tiles[i].hasWinding {
         winding += tiles[i].line.direction > 0 ? 1 : -1
-        print("winding=\(winding)")
+        // print("winding=\(winding)")
       }
 
       let next = tiles[i + 1]
@@ -432,9 +432,9 @@ func generateStrips(
 
     // allocate buffer, known size
     let coverage = coverageBuffer.allocate(stripWidth)
-    print(
-      "Compute coverage: background=\(w) stripWidth=\(stripWidth), tiles[\(start)...\(i)], x: \(tiles[start].x)...\(tiles[i].x) y: \(tiles[start].y)...\(tiles[i].y)"
-    )
+    // print(
+    //   "Compute coverage: background=\(w) stripWidth=\(stripWidth), tiles[\(start)...\(i)], x: \(tiles[start].x)...\(tiles[i].x) y: \(tiles[start].y)...\(tiles[i].y)"
+    // )
 
     let range = tiles.extracting(start...i)
     computeCoverage(
