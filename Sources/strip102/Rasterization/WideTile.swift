@@ -1,12 +1,21 @@
 import Dispatch
 
+
+/// nested array, flatten, with offset table
+struct WideTileCommands {
+  var commands: [WideTileDrawOp]
+  var offsets: [Int]
+
+  var tileCount: Int { offsets.count - 1 }
+}
+
 func generateWideTileCommands(
   width: Int,
   height: Int,
   strips: [[Strip]],
   ops: Span<DrawOp>,
   tileSize: Int
-) -> [[WideTileDrawOp]] {
+) -> WideTileCommands {
   let wideTileXCount = Int((Float(width) / 256).rounded(.up))
   let wideTileYCount = Int((Float(height) / 4).rounded(.up))
   let tileCount = wideTileXCount * wideTileYCount
@@ -16,8 +25,8 @@ func generateWideTileCommands(
 
   nonisolated(unsafe) let strips = strips
 
-
-  // Pass 1: allocate index
+  // Pass 1: count commands per wide tile (same splitting logic as pass 3, tallying only), so
+  // the flat array's per-tile slices can be sized exactly via a prefix sum below.
   var counts = [Int](repeating: 0, count: tileCount)
   counts.withUnsafeMutableBufferPointer { countsBuffer in
     nonisolated(unsafe) let countsBuffer = countsBuffer
@@ -34,28 +43,46 @@ func generateWideTileCommands(
     }
   }
 
-  var wideTileCommands: [[WideTileDrawOp]] = Array(repeating: [], count: tileCount)
-  for i in wideTileCommands.indices where counts[i] > 0 {
-    wideTileCommands[i].reserveCapacity(counts[i])
+  // Pass 2: prefix sum -> offsets. tile i's slice is offsets[i]..<offsets[i + 1].
+  var offsets = [Int](repeating: 0, count: tileCount + 1)
+  var running = 0
+  for i in 0..<tileCount {
+    offsets[i] = running
+    running += counts[i]
   }
+  offsets[tileCount] = running
+  let totalCommands = running
 
-  // Pass 2: Actually emitting
-  wideTileCommands.withUnsafeMutableBufferPointer { commandsBuffer in
-    nonisolated(unsafe) let commandsBuffer = commandsBuffer
-    DispatchQueue.concurrentPerform(iterations: threadCount) { threadIndex in
-      let yStart = threadIndex * rowChunk
-      let yEnd = min(yStart + rowChunk, wideTileYCount)
-      guard yStart < yEnd else { return }
-      walkStrips(
-        ops: ops, strips: strips, tileSize: tileSize, wideTileXCount: wideTileXCount,
-        tileCount: tileCount, yStart: yStart, yEnd: yEnd
-      ) { index, op in
-        commandsBuffer[index].append(op)
+  // Pass 3: same walk again, now actually emitting into the flat array. Each tile gets a
+  // write cursor starting at its offset; since tiles are still partitioned by row band (one
+  // thread per band, same as pass 1), no two threads ever touch the same cursor or the same
+  // flat-array position, so plain (non-atomic) increments are safe.
+  var writeCursor = Array(offsets.prefix(tileCount))
+
+  let commands: [WideTileDrawOp] = Array(unsafeUninitializedCapacity: totalCommands) {
+    out, initializedCount in
+    initializedCount = totalCommands
+    nonisolated(unsafe) let out = out
+
+    writeCursor.withUnsafeMutableBufferPointer { cursorBuffer in
+      nonisolated(unsafe) let cursorBuffer = cursorBuffer
+      DispatchQueue.concurrentPerform(iterations: threadCount) { threadIndex in
+        let yStart = threadIndex * rowChunk
+        let yEnd = min(yStart + rowChunk, wideTileYCount)
+        guard yStart < yEnd else { return }
+        walkStrips(
+          ops: ops, strips: strips, tileSize: tileSize, wideTileXCount: wideTileXCount,
+          tileCount: tileCount, yStart: yStart, yEnd: yEnd
+        ) { index, op in
+          let position = cursorBuffer[index]
+          out.initializeElement(at: position, to: op)
+          cursorBuffer[index] = position + 1
+        }
       }
     }
   }
 
-  return wideTileCommands
+  return WideTileCommands(commands: commands, offsets: offsets)
 }
 
 // shared splitting/geometry logic between the counting and filling passes, so they can't drift

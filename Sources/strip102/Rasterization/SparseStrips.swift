@@ -68,6 +68,8 @@ func drawSparseSprips(
 
   // executing thos
   let next = Atomic(0)
+  let allCommands = wideTileCommands.commands.span
+  let offsets = wideTileCommands.offsets
   pixels.withUnsafeMutableBufferPointer { buffer in
     nonisolated(unsafe) let buffer = buffer
     DispatchQueue.concurrentPerform(iterations: coreCount) { _ in
@@ -75,14 +77,13 @@ func drawSparseSprips(
       // each thread should keep a 256x4 column major blend scratch?
       while true {
         let i = next.add(1, ordering: .relaxed).oldValue
-        guard i < wideTileCommands.count else { break }
+        guard i < wideTileCommands.tileCount else { break }
 
-        let commands = wideTileCommands[i]
         let x = i % wideTileXCount
         let y = i / wideTileXCount
 
         drawWideTile(
-          x: x, y: y, ops: commands.span,
+          x: x, y: y, ops: allCommands.extracting(offsets[i]..<offsets[i + 1]),
           pixels: buffer.baseAddress!,
           width: width, height: height
         )
