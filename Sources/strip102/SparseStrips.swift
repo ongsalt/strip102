@@ -14,6 +14,8 @@ func drawSparseSprips(
   let tileSize = 4
 
   let coreCount = getRealCoreCount()
+
+  // this shit can be cache tho
   let coverageBuffer = CoverageBuffer(tileSize: tileSize, tileCount: 1024 * 128)
 
   // index = path index
@@ -54,20 +56,13 @@ func drawSparseSprips(
     }
   }
 
-  // for s in strips {
-  //   for s in s {
-  //     print(s)
-  //     print(coverageBuffer.coverages[Int(s.coverageIndex)])
-  //   }
-  // }
 
   // generate per WideTile (screen space) draw commands ??
   let wideTileXCount = Int((Float(width) / 256).rounded(.up))
   let wideTileYCount = Int((Float(height) / 4).rounded(.up))
 
   // wide tile is in row major for conveniece
-  var wideTileCommands: [[WideTileDrawOp]] = Array(
-    repeating: [], count: wideTileXCount * wideTileYCount)
+  var wideTileCommands: [[WideTileDrawOp]] = Array(repeating: [], count: wideTileXCount * wideTileYCount)
 
   for i in ops.indices {
     // generate command in painter order
@@ -119,17 +114,15 @@ func drawSparseSprips(
 
       // in tile unit
       var areaLeft = coverageWidth
-      var currentX = x // relative to widetile
+      var currentX = x  // relative to widetile
       var currentOffset = 0
       for wideTileX in wideTileXStart...wideTileXEnd {
         let wideTileIndex = wideTileX + wideTileY * wideTileXCount
         // in tile unit (w)
         let consumed = min(areaLeft, 64)
 
-
         // TODO: verify this
         // in pixel, but it will always be divisible by 16 tho
-
 
         if wideTileIndex >= wideTileCommands.count {
           break
@@ -159,11 +152,6 @@ func drawSparseSprips(
   // print(wideTileCommands[214].count)
 
   let _wideTileCommands = wideTileCommands
-  for cmds in _wideTileCommands {
-    // if !cmds.isEmpty {
-    //   print(cmds)
-    // }
-  }
 
   // executing thos
   let next = Atomic(0)
@@ -396,7 +384,7 @@ struct Coverage: @unchecked Sendable {
 }
 
 func generateStrips(
-  tiles: Span<Tile>,
+  tiles: borrowing Span<Tile>,
   coverageBuffer: CoverageBuffer,
   scratchBuffer: UnsafeMutableBufferPointer<Float16>
 ) -> [Strip] {
@@ -445,11 +433,9 @@ func generateStrips(
 
     // allocate buffer, known size
     let coverage = coverageBuffer.allocate(stripWidth)
-    if stripWidth == 5 {
-      print(
-        "Compute coverage: background=\(w) stripWidth=\(stripWidth), tiles[\(start)...\(i)], x: \(tiles[start].x)...\(tiles[i].x) y: \(tiles[start].y)...\(tiles[i].y)"
-      )
-    }
+    // print(
+    //   "Compute coverage: background=\(w) stripWidth=\(stripWidth), tiles[\(start)...\(i)], x: \(tiles[start].x)...\(tiles[i].x) y: \(tiles[start].y)...\(tiles[i].y)"
+    // )
 
     let range = tiles.extracting(start...i)
     computeCoverage(
@@ -461,9 +447,7 @@ func generateStrips(
       stripWidth: stripWidth
     )
 
-    if stripWidth == 5 {
-      coverageBuffer.print(index: coverage.index)
-    }
+    // coverageBuffer.print(index: coverage.index)
 
     // TODO: fill rule
     strips.append(Strip(x: x, y: y, coverageIndex: UInt16(coverage.index), shouldFillLeft: w != 0))
@@ -475,7 +459,7 @@ func generateStrips(
 
 // column major
 func computeCoverage(
-  tiles: Span<Tile>,
+  tiles: borrowing Span<Tile>,
   // inclusive
   tileSize: Int,
   buffer: UnsafeMutableBufferPointer<Float16>,  // fill

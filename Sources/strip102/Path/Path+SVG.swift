@@ -93,7 +93,7 @@ func benchSvg(
   _ filename: String,
   scale: Float = 1.0,
   algorithm: FillAlgorithm = .default,
-  iterations: Int = 1000
+  iterations: Int = 200
 ) {
   let parsed = parseSvg(filename)
   defer { nsvgDelete(parsed) }

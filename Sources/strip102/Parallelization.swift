@@ -54,7 +54,8 @@ func getRealCoreCount() -> Int {
 
     return physicalCores
   #else
-    return ProcessInfo.processInfo.processorCount
+    // TODO: fix hyperthreading bs
+    return ProcessInfo.processInfo.processorCount / 2
   #endif
 }
 
