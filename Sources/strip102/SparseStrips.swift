@@ -35,6 +35,11 @@ func drawSparseSprips(
         let lines = ops[i].path.breakIntoLines(transform: ops[i].transform, tolerance: 0.25)
         let tiles = generateTiles(lines: lines)
 
+        print("tiles")
+        for t in tiles {
+          print(" - \(t)")
+        }
+
         // also generate coverage
         let strips = generateStrips(
           tiles: tiles.span,
@@ -42,12 +47,7 @@ func drawSparseSprips(
           scratchBuffer: scratchBuffer
         )
 
-        print("strips", strips)
-
-        print("tiles")
-        for t in tiles {
-          print(" - \(t)")
-        }
+        // print("strips", strips)
 
         buffer.initializeElement(at: i, to: strips)
       }
@@ -90,7 +90,9 @@ func drawSparseSprips(
 
       for wideTileX in wideTileXStart...wideTileXEnd {
         let wideTileIndex = wideTileX + wideTileY * wideTileXCount
-        let w = min(coverageW, 64)
+        // in tile unit (w)
+        let areaLeft = Int(64 - x)
+        let w = min(coverageW, areaLeft)
         // TODO: verify this
         // in pixel, but it will always be divisible by 16 tho
 
@@ -101,7 +103,7 @@ func drawSparseSprips(
         wideTileCommands[wideTileIndex].append(
           WideTileDrawOp.aa(
             x: x,
-            w: UInt16(w),  // it tile unit
+            w: UInt16(w),  // it tile unit, should not overflow
             ops[i].color,
             index: UInt(strip.coverageIndex),
             offset: UInt16(0)
@@ -109,7 +111,7 @@ func drawSparseSprips(
         )
         // x will always be 0 in later iteration
         x = 0
-        coverageW -= 64
+        coverageW -= w
       }
     }
   }
@@ -119,7 +121,7 @@ func drawSparseSprips(
 
   let _wideTileCommands = wideTileCommands
   for cmds in _wideTileCommands {
-    print(cmds)
+    // print(cmds.count)
   }
 
   // executing thos
@@ -130,7 +132,7 @@ func drawSparseSprips(
       // pull tasks
       while true {
         let i = next.add(1, ordering: .relaxed).oldValue
-        guard i < ops.count else { break }
+        guard i < _wideTileCommands.count else { break }
 
         let commands = _wideTileCommands[i]
         let x = i % wideTileXCount
@@ -157,7 +159,8 @@ func drawWideTile(
   let tileStartX = x * 256
   let tileStartY = y * 4
   let rowCount = min(4, height - tileStartY)
-  guard rowCount > 0 else { return }
+  guard rowCount > 0, ops.count > 0 else { return }
+  // print("Drawing wide tile at (\(tileStartX) \(tileStartY))")
 
   for i in ops.indices {
     switch ops[i] {
@@ -190,7 +193,7 @@ func drawWideTile(
       let coverage = coverageBuffer.coverages[Int(index)].buffer
       let startX = tileStartX + Int(x) * 4  // actual pixel
       let endX = min(startX + Int(w) * 4, width)
-      print("Executing aa at x=\(startX)...\(endX)")
+      // print(" - Executing aa at x=\(startX)...\(endX)")
       guard startX < endX else { continue }
 
       let source = Color8(color)
@@ -219,6 +222,8 @@ struct Tile {
   }
 }
 
+// [0, 4) [4, 8) [8, 12) [12, 15)
+
 // TODO: Borrowing iterator
 func generateTiles(lines: consuming [Line]) -> [Tile] {
   var tiles: [Tile] = []
@@ -233,16 +238,16 @@ func generateTiles(lines: consuming [Line]) -> [Tile] {
     // for each segment: bin by x
     let dy = line.end.y - line.start.y
     let dir = if dy > 0 { 1 } else { -1 }
-    print("new dy=\(dy) yStart=\(yStart) yEnd=\(yEnd)")
+    // print("new dy=\(dy) yStart=\(yStart) yEnd=\(yEnd)")
     for y in stride(from: yStart, through: yEnd, by: dir) {
       // let yBinnedLine = Line(line.sample(t1), line.sample(t2))
       let yBinnedLine = line.crop(y: Float(tileSize * y)...(Float(tileSize * (y + 1))))
 
       // ignore horizontal line
-      if yBinnedLine.start.y == yBinnedLine.end.y { continue }
+      // if yBinnedLine.start.y == yBinnedLine.end.y { continue }
 
       print(line, yBinnedLine)
-      // print(" - \(yBinnedLine)")
+      print(" - \(yBinnedLine)")
 
       let xStart = Int(yBinnedLine.start.x) / tileSize
       let xEnd = Int(yBinnedLine.end.x) / tileSize
@@ -252,6 +257,7 @@ func generateTiles(lines: consuming [Line]) -> [Tile] {
       for x in stride(from: xStart, through: xEnd, by: dir) {
         let xBinnedLine = yBinnedLine.crop(x: Float(tileSize * x)...(Float(tileSize * (x + 1))))
         if xBinnedLine.isPoint { continue }
+
         let tile = Tile(
           x: UInt16(x),
           y: UInt16(y),
@@ -259,7 +265,7 @@ func generateTiles(lines: consuming [Line]) -> [Tile] {
           hasWinding: xBinnedLine.start.y == Float(y * tileSize)
         )
         tiles.append(tile)
-        // print(" > \(tile)")
+        print(" > \(tile)")
       }
     }
   }
@@ -378,9 +384,9 @@ func generateStrips(
 
     // zeroing only needed
     let stripWidth = Int(tiles[i].x - tiles[start].x + 1)
-    // scratchBuffer.extracting(0..<stripWidth * coverageBuffer.tileSize * coverageBuffer.tileSize)
-    //   .update(repeating: 0.0)
-    scratchBuffer.initialize(repeating: 0.0)
+    scratchBuffer.extracting(0..<stripWidth * coverageBuffer.tileSize * coverageBuffer.tileSize)
+      .update(repeating: 0.0)
+    // scratchBuffer.initialize(repeating: 0.0)
 
     // allocate buffer, known size
     let coverage = coverageBuffer.allocate(stripWidth)
@@ -424,7 +430,6 @@ func computeCoverage(
 
     for ly in 0..<4 {
       let yBinnedLine = line.crop(y: stripStartY + Float(ly)...stripStartY + Float(ly + 1))
-      if yBinnedLine.start.y == yBinnedLine.end.y { continue }
       // print(yBinnedLine, ly + Int(stripStartY) * 4)
 
       for lx in 0..<4 {
@@ -432,8 +437,8 @@ func computeCoverage(
         let line = yBinnedLine.crop(x: tileStartX + Float(lx)...tileStartX + Float(lx + 1))
         // if its out of this pixel, continue
         if line.xBounds.0 != lx + Int(tiles[i].x) * 4 { continue }
-        // print("> [\(lx), \(ly)] \(line)")
-
+        if line.isPoint { continue }
+        print("> [\(Int(tileStartX) + lx), \(Int(stripStartY) + ly)] \(line)")
 
         // crop line into; math in f32, f16 only at the store
         let dy = line.end.y - line.start.y
@@ -447,17 +452,23 @@ func computeCoverage(
         // fill
         // buffer[offset] += Float16(dy)
         buffer[offset] += Float16(dy * (1 - xMid))
+
+        // print(" > coverage:\(scratchBuffer[offset]) fill:\(buffer[offset])")
+
       }
     }
   }
 
-  let fill: UnsafeMutablePointer<SIMD4<Float16>> = UnsafeMutablePointer<SIMD4<Float16>>(OpaquePointer(buffer.baseAddress))!
+  let fill: UnsafeMutablePointer<SIMD4<Float16>> = UnsafeMutablePointer<SIMD4<Float16>>(
+    OpaquePointer(buffer.baseAddress))!
   let coverage = UnsafeMutablePointer<SIMD4<Float16>>(OpaquePointer(scratchBuffer.baseAddress))!
   var acc: SIMD4<Float> = .zero
 
-  for x in tiles[0].x * 4..<tiles[tiles.count - 1].x * 4 + 4 {
+  for x in 0..<(tiles[tiles.count - 1].x - tiles[0].x + 1) * 4 {
+    let f = fill[Int(x)]
     fill[Int(x)] = SIMD4<Float16>(SIMD4<Float>(fill[Int(x)]) + acc + Float(background))
     acc += SIMD4<Float>(coverage[Int(x)])
+    print(x, acc)
   }
 
 }
