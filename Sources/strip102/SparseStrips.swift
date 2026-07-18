@@ -105,13 +105,13 @@ func drawSparseSprips(
           let filledWidth = min(fillEnd - fillX, 64 - localX)
           let fillWideTileIndex = fillWideTileX + wideTileY * wideTileXCount
           if fillWideTileIndex < wideTileCommands.count {
-            // wideTileCommands[fillWideTileIndex].append(
-            //   WideTileDrawOp.solid(
-            //     x: UInt16(localX),
-            //     w: UInt16(filledWidth),
-            //     ops[i].color
-            //   )
-            // )
+            wideTileCommands[fillWideTileIndex].append(
+              WideTileDrawOp.solid(
+                x: UInt16(localX),
+                w: UInt16(filledWidth),
+                ops[i].color
+              )
+            )
           }
           fillX += filledWidth
         }
