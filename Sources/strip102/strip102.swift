@@ -43,9 +43,10 @@ struct strip102: ParsableCommand {
         var path = Path()
         // path.quad(to: Point(100, 100), control: Point(0, 100))
         let n: Float = 9.0
-        path.move(to: Point(1, 2))
+        path.move(to: Point(19 * n, 2 * n))
         path.line(to: Point(15 * n, 8 * n))
-        path.line(to: Point(15 * n, 2 * n))
+        path.line(to: Point(20 * n, 2 * n))
+        path.line(to: Point(19 * n, 2 * n))
 
 
         // let offset = Point(1, 1)

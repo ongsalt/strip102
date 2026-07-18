@@ -81,18 +81,17 @@ func drawSparseSprips(
       // in tile unit (w)
       let coverageWidth =
         coverageBuffer.coverages[Int(strip.coverageIndex)].buffer.count / (tileSize * tileSize)
-      var coverageW = coverageWidth
       // in tile size
 
       // strip may got split
       // in wideTile index
       let wideTileXStart = Int(strip.x * 4 / 256)
       // wideTileX where this end
-      let wideTileXEnd = Int(strip.x) + coverageW * 4 / 256
+      let wideTileXEnd = Int(strip.x) + coverageWidth * 4 / 256
       let wideTileY = Int(strip.y)
 
-      // 1 widetile is 64 4x4 tile, tile unit
-      var x: UInt16 = UInt16(Int(strip.x) - wideTileXStart * 64)
+      // 1 widetile is 64 4x4 tile, tile unit, relative to wideTile start
+      let x: UInt16 = UInt16(Int(strip.x) - wideTileXStart * 64)
 
       if strip.shouldFillLeft, let lastStripEnd, wideTileY == lastStripEnd.y {
         // fill the gap between the end of the previous strip and the start of
@@ -118,13 +117,19 @@ func drawSparseSprips(
         }
       }
 
+      // in tile unit
+      var areaLeft = coverageWidth
+      var currentX = x // relative to widetile
+      var currentOffset = 0
       for wideTileX in wideTileXStart...wideTileXEnd {
         let wideTileIndex = wideTileX + wideTileY * wideTileXCount
         // in tile unit (w)
-        let areaLeft = Int(64 - x)
-        let w = min(coverageW, areaLeft)
+        let consumed = min(areaLeft, 64)
+
+
         // TODO: verify this
         // in pixel, but it will always be divisible by 16 tho
+
 
         if wideTileIndex >= wideTileCommands.count {
           break
@@ -132,16 +137,18 @@ func drawSparseSprips(
 
         wideTileCommands[wideTileIndex].append(
           WideTileDrawOp.aa(
-            x: x,
-            w: UInt16(w),  // it tile unit, should not overflow
+            x: currentX,
+            w: UInt16(consumed),  // it tile unit, should not overflow
             ops[i].color,
             index: UInt(strip.coverageIndex),
-            offset: UInt16(0)
+            offset: UInt16(currentOffset)
           )
         )
         // x will always be 0 in later iteration
-        x = 0
-        coverageW -= w
+
+        currentOffset += consumed
+        areaLeft -= consumed
+        currentX = 0
       }
 
       lastStripEnd = (x: Int(strip.x) + coverageWidth, y: wideTileY)
@@ -410,12 +417,14 @@ func generateStrips(
     let x = tiles[i].x
     let y = tiles[i].y
 
+    // print("Start tile at \(start) \(tiles[start])")
     while i < tiles.count - 1 {
       if tiles[i].hasWinding {
         winding += tiles[i].line.direction > 0 ? 1 : -1
         // print("winding=\(winding)")
       }
 
+      // TODO: bounds check here
       let next = tiles[i + 1]
       if next.y == tiles[i].y && next.x - tiles[i].x <= 1 {
         i += 1
@@ -426,15 +435,21 @@ func generateStrips(
 
     // zeroing only needed
     let stripWidth = Int(tiles[i].x - tiles[start].x + 1)
+    // if stripWidth == 1 {
+    //   print("> break tile at \(i)  \(tiles[i])")
+    // }
+
     scratchBuffer.extracting(0..<stripWidth * coverageBuffer.tileSize * coverageBuffer.tileSize)
       .update(repeating: 0.0)
     // scratchBuffer.initialize(repeating: 0.0)
 
     // allocate buffer, known size
     let coverage = coverageBuffer.allocate(stripWidth)
-    // print(
-    //   "Compute coverage: background=\(w) stripWidth=\(stripWidth), tiles[\(start)...\(i)], x: \(tiles[start].x)...\(tiles[i].x) y: \(tiles[start].y)...\(tiles[i].y)"
-    // )
+    if stripWidth == 5 {
+      print(
+        "Compute coverage: background=\(w) stripWidth=\(stripWidth), tiles[\(start)...\(i)], x: \(tiles[start].x)...\(tiles[i].x) y: \(tiles[start].y)...\(tiles[i].y)"
+      )
+    }
 
     let range = tiles.extracting(start...i)
     computeCoverage(
@@ -443,9 +458,12 @@ func generateStrips(
       buffer: coverage.buffer,
       scratchBuffer: scratchBuffer,
       background: w,
+      stripWidth: stripWidth
     )
 
-    // coverageBuffer.print(index: coverage.index)
+    if stripWidth == 5 {
+      coverageBuffer.print(index: coverage.index)
+    }
 
     // TODO: fill rule
     strips.append(Strip(x: x, y: y, coverageIndex: UInt16(coverage.index), shouldFillLeft: w != 0))
@@ -462,7 +480,8 @@ func computeCoverage(
   tileSize: Int,
   buffer: UnsafeMutableBufferPointer<Float16>,  // fill
   scratchBuffer: UnsafeMutableBufferPointer<Float16>,  // coverage
-  background: Int
+  background: Int,
+  stripWidth: Int
 ) {
   // in pixel
   let stripStartY = Float(tiles[0].y) * 4
@@ -504,13 +523,23 @@ func computeCoverage(
   let fill: UnsafeMutablePointer<SIMD4<Float16>> = UnsafeMutablePointer<SIMD4<Float16>>(
     OpaquePointer(buffer.baseAddress))!
   let coverage = UnsafeMutablePointer<SIMD4<Float16>>(OpaquePointer(scratchBuffer.baseAddress))!
-  var acc: SIMD4<Float> = .zero
+  var acc: SIMD4<Float> = SIMD4(repeating: Float(background))
 
-  for x in 0..<(tiles[tiles.count - 1].x - tiles[0].x + 1) * 4 {
-    fill[Int(x)] = SIMD4<Float16>(SIMD4<Float>(fill[Int(x)]) + acc + Float(background))
+  for x in 0..<stripWidth * 4 {
+    let f = SIMD4<Float>(fill[Int(x)]) + acc
+    fill[Int(x)] = SIMD4<Float16>(f)
     acc += SIMD4<Float>(coverage[Int(x)])
+
+    // if buffer.count / (tileSize * tileSize) == 5 {
+    //   fill[Int(x)] = .one / 4
+    // }
   }
 
+  // fill[0] = .one / 12 * Float16(buffer.count / (tileSize * tileSize))
+  // if buffer.count / (tileSize * tileSize) == 5 {
+  //   fill[0] = .one / 3
+  //   // for
+  // }
 }
 
 enum WideTileDrawOp {
