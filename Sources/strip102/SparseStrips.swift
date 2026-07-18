@@ -61,103 +61,9 @@ func drawSparseSprips(
 
   // generate per WideTile (screen space) draw commands ??
   let wideTileXCount = Int((Float(width) / 256).rounded(.up))
-  let wideTileYCount = Int((Float(height) / 4).rounded(.up))
 
   // wide tile is in row major for conveniece
-  var wideTileCommands: [[WideTileDrawOp]] = Array(
-    repeating: [], count: wideTileXCount * wideTileYCount)
-
-  for i in wideTileCommands.indices {
-    wideTileCommands[i].reserveCapacity(1024)
-  }
-
-  for i in ops.indices {
-    // generate command in painter order
-    let strips = strips[i]
-
-    // in tile unit (x, y), end of the last strip emitted on this row
-    var lastStripEnd: (x: Int, y: Int)?
-    for strip in strips {
-      // strip is ordered by x anyway, so by the time we generate .solid it gonna be well form
-
-      // in tile unit (w)
-      let coverageWidth = strip.coverageBuffer.count / (tileSize * tileSize)
-      // in tile size
-
-      // strip may got split
-      // in wideTile index
-      let wideTileXStart = Int(strip.x * 4 / 256)
-      // wideTileX where this end
-      let wideTileXEnd = Int(strip.x) + coverageWidth * 4 / 256
-      let wideTileY = Int(strip.y)
-
-      // 1 widetile is 64 4x4 tile, tile unit, relative to wideTile start
-      let x: UInt16 = UInt16(Int(strip.x) - wideTileXStart * 64)
-
-      if strip.shouldFillLeft, let lastStripEnd, wideTileY == lastStripEnd.y {
-        // fill the gap between the end of the previous strip and the start of
-        // this one with the winding number carried over (background), splitting
-        // at wide tile boundaries since a draw command only lives in one wide tile
-        var fillX = lastStripEnd.x
-        let fillEnd = Int(strip.x)
-        while fillX < fillEnd {
-          let fillWideTileX = fillX / 64
-          let localX = fillX % 64
-          let filledWidth = min(fillEnd - fillX, 64 - localX)
-          let fillWideTileIndex = fillWideTileX + wideTileY * wideTileXCount
-          if fillWideTileIndex < wideTileCommands.count {
-            wideTileCommands[fillWideTileIndex].append(
-              WideTileDrawOp.solid(
-                x: UInt16(localX),
-                w: UInt16(filledWidth),
-                ops[i].color
-              )
-            )
-          }
-          fillX += filledWidth
-        }
-      }
-
-      // in tile unit
-      var areaLeft = coverageWidth
-      var currentX = x  // relative to widetile
-      var currentOffset = 0
-      for wideTileX in wideTileXStart...wideTileXEnd {
-        let wideTileIndex = wideTileX + wideTileY * wideTileXCount
-        // in tile unit (w)
-        let consumed = min(areaLeft, 64)
-
-        // TODO: verify this
-        // in pixel, but it will always be divisible by 16 tho
-
-        if wideTileIndex >= wideTileCommands.count {
-          break
-        }
-
-        wideTileCommands[wideTileIndex].append(
-          WideTileDrawOp.aa(
-            x: currentX,
-            w: UInt16(consumed),  // it tile unit, should not overflow
-            ops[i].color,
-            coverageBuffer: strip.coverageBuffer,
-            offset: UInt16(currentOffset)
-          )
-        )
-        // x will always be 0 in later iteration
-
-        currentOffset += consumed
-        areaLeft -= consumed
-        currentX = 0
-      }
-
-      lastStripEnd = (x: Int(strip.x) + coverageWidth, y: wideTileY)
-    }
-  }
-
-  // let total = wideTileCommands.lazy.map(\.count).reduce(0, +)
-  // print(wideTileCommands[214].count)
-
-  let _wideTileCommands = wideTileCommands
+  let wideTileCommands = generateWideTileCommands(width: width, height: height, strips: strips, ops: ops, tileSize: tileSize)  
 
   // executing thos
   let next = Atomic(0)
@@ -165,18 +71,20 @@ func drawSparseSprips(
     nonisolated(unsafe) let buffer = buffer
     DispatchQueue.concurrentPerform(iterations: coreCount) { _ in
       // pull tasks
+      // each thread should keep a 256x4 column major blend scratch?
       while true {
         let i = next.add(1, ordering: .relaxed).oldValue
-        guard i < _wideTileCommands.count else { break }
+        guard i < wideTileCommands.count else { break }
 
-        let commands = _wideTileCommands[i]
+        let commands = wideTileCommands[i]
         let x = i % wideTileXCount
         let y = i / wideTileXCount
 
         drawWideTile(
           x: x, y: y, ops: commands.span,
           pixels: buffer.baseAddress!,
-          width: width, height: height)
+          width: width, height: height
+        )
       }
     }
   }
