@@ -70,7 +70,10 @@ func parseSvg(_ filename: String) -> UnsafeMutablePointer<NSVGimage> {
   return image
 }
 
-func importSvg(_ filename: String, scale: Float = 1.0, algorithm: FillAlgorithm = .default) {
+func importSvg(
+  _ filename: String, scale: Float = 1.0, algorithm: FillAlgorithm = .default,
+  output: String? = nil
+) {
   let clock = ContinuousClock()
   let start = clock.now
 
@@ -79,8 +82,9 @@ func importSvg(_ filename: String, scale: Float = 1.0, algorithm: FillAlgorithm 
 
   var canvas = rasterizeSvg(parsed, scale: scale, algorithm: algorithm)
 
-  let stem = URL(fileURLWithPath: filename).deletingPathExtension().lastPathComponent
-  let pamPath = "\(stem).pam"
+  let pamPath =
+    output
+    ?? URL(fileURLWithPath: filename).deletingPathExtension().appendingPathExtension("pam").path
 
   try! canvas.save(to: pamPath)
 
@@ -93,7 +97,7 @@ func benchSvg(
   _ filename: String,
   scale: Float = 1.0,
   algorithm: FillAlgorithm = .default,
-  iterations: Int = 200
+  iterations: Int = 1000
 ) {
   let parsed = parseSvg(filename)
   defer { nsvgDelete(parsed) }

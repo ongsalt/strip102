@@ -13,6 +13,11 @@ struct strip102: ParsableCommand {
     @Flag(help: "Run the render pipeline 100 times with no file output, for benchmarking.")
     var bench = false
 
+    @Option(
+        name: .shortAndLong,
+        help: "Output file path. Defaults to the input file's own directory.")
+    var output: String?
+
     @Option(name: .shortAndLong, help: "Output resolution multiplier, e.g. 2 for 2x.")
     var scale: Float = 1.0
 
@@ -33,7 +38,7 @@ struct strip102: ParsableCommand {
             if bench {
                 benchSvg(file, scale: scale, algorithm: fillAlgorithm)
             } else {
-                importSvg(file, scale: scale, algorithm: fillAlgorithm)
+                importSvg(file, scale: scale, algorithm: fillAlgorithm, output: output)
             }
         }
     }

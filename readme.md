@@ -8,6 +8,12 @@ perf script | ./FlameGraph/stackcollapse-perf.pl | swift demangle | ./FlameGraph
 
 # Benchmark
 
+### Spare strip (our implementation, not vello)
+```
+bench tiger.svg x1000: total=8.33663389s, avg=8.336634ms, min=6.757702ms, max=22.461194ms
+```
+
+### Scanline
 ```
 bench tiger.svg x1000: total=13.91991820s, avg=13.919918ms, min=13.522885ms, max=22.299697ms
 ```
@@ -15,6 +21,8 @@ bench tiger.svg x1000: total=13.91991820s, avg=13.919918ms, min=13.522885ms, max
 ```
 bench tiger.svg x1000: total=13.12967282s, avg=13.129673ms, min=12.002300ms, max=19.617795ms
 ```
+
+vello_cpu is like 4ms
 
 `strip102` is a bit faster than the [rust version](https://github.com/ongsalt/strip101) but its unfair cuz the rust version offer js canvas like path recording api and store it as `Vec<PathCommand>` rather than `Vec<PathSegment>`.
 

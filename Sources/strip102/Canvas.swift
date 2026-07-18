@@ -130,10 +130,11 @@ public struct Canvas: ~Copyable {
     flush()
     try writePam(pixels: pixels.span, width: width, height: height, to: path)
 
-    let stem = URL(fileURLWithPath: path).deletingPathExtension().lastPathComponent
+    let pngPath = URL(fileURLWithPath: path).deletingPathExtension().appendingPathExtension("png")
+      .path
 
     #if !os(Windows)
-      convertToPng(ppmPath: path, pngPath: "\(stem).png")
+      convertToPng(ppmPath: path, pngPath: pngPath)
     #endif  // !os(Windows)
 
   }
