@@ -143,7 +143,7 @@ func drawWideTile(
       let source = Color8(color)
       for column in 0..<(endX - startX) {
         // column major, 4 rows per pixel column
-        let columnStart = (Int(offset) + column) * 4
+        let columnStart = (Int(offset) * 4 + column) * 4
         // print(coverage, columnStart)
         for row in 0..<rowCount {
           // TODO: fill rule, this is nonzero

@@ -89,8 +89,9 @@ private func walkStrips(
       // strip may got split
       // in wideTile index
       let wideTileXStart = Int(strip.x * 4 / 256)
-      // wideTileX where this end
-      let wideTileXEnd = Int(strip.x) + coverageWidth * 4 / 256
+      // wideTileX where this end; same scale as wideTileXStart (wideTile-column units), computed
+      // from the strip's last covered tile index rather than mixing tile-index and column scales
+      let wideTileXEnd = (Int(strip.x) + coverageWidth - 1) * 4 / 256
 
       // 1 widetile is 64 4x4 tile, tile unit, relative to wideTile start
       let x: UInt16 = UInt16(Int(strip.x) - wideTileXStart * 64)
@@ -126,8 +127,9 @@ private func walkStrips(
       var currentOffset = 0
       for wideTileX in wideTileXStart...wideTileXEnd {
         let wideTileIndex = wideTileX + wideTileY * wideTileXCount
-        // in tile unit (w)
-        let consumed = min(areaLeft, 64)
+        // in tile unit (w); only the first chunk starts mid-widetile (at currentX), so only it
+        // has less than the full 64 tiles of room left before this widetile's right edge
+        let consumed = min(areaLeft, 64 - Int(currentX))
 
         if wideTileIndex >= tileCount {
           break
