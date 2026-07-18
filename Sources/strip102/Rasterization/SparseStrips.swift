@@ -2,6 +2,9 @@ import Dispatch
 import Foundation
 import Synchronization
 
+let TILE_SIZE: Int = 4
+let WIDE_TILE_WIDTH: Int = 256
+
 func drawSparseSprips(
   ops: borrowing [DrawOp],
   pixels: inout MutableSpan<Pixel>,
@@ -11,13 +14,12 @@ func drawSparseSprips(
   // bin screen into 256x4 `wide` tiles
 
   let ops = ops.span
-  let tileSize = 4
 
   let coreCount = getRealCoreCount()
 
   // this shit can be cache tho
   let coverageBuffers = (0..<coreCount).map { _ in
-    CoverageBuffer(tileSize: tileSize, tileCount: 1024 * 128)
+    CoverageBuffer(tileSize: TILE_SIZE, tileCount: 1024 * 128)
   }
 
   // index = path index
@@ -29,7 +31,7 @@ func drawSparseSprips(
     DispatchQueue.concurrentPerform(iterations: coreCount) { threadIndex in
       // per thread
       let scratchBuffer: UnsafeMutableBufferPointer<Float> = .allocate(
-        capacity: tileSize * tileSize * 1024)
+        capacity: TILE_SIZE * TILE_SIZE * 1024)
       let coverageBuffer = coverageBuffers[threadIndex]
 
       // pull tasks
@@ -64,7 +66,7 @@ func drawSparseSprips(
   let wideTileXCount = Int((Float(width) / 256).rounded(.up))
 
   // wide tile is in row major for conveniece
-  let wideTileCommands = generateWideTileCommands(width: width, height: height, strips: strips, ops: ops, tileSize: tileSize)  
+  let wideTileCommands = generateWideTileCommands(width: width, height: height, strips: strips, ops: ops, tileSize: TILE_SIZE)  
 
   // executing thos
   let next = Atomic(0)
@@ -104,17 +106,17 @@ func drawWideTile(
   width: Int,
   height: Int
 ) {
-  let tileStartX = x * 256
-  let tileStartY = y * 4
-  let rowCount = min(4, height - tileStartY)
+  let tileStartX = x * WIDE_TILE_WIDTH
+  let tileStartY = y * TILE_SIZE
+  let rowCount = min(TILE_SIZE, height - tileStartY)
   guard rowCount > 0, ops.count > 0 else { return }
   // print("Drawing wide tile at (\(tileStartX) \(tileStartY))")
 
   for i in ops.indices {
     switch ops[unchecked: i] {
     case .solid(let x, let w, let color):
-      let startX = tileStartX + Int(x) * 4
-      let endX = min(startX + Int(w) * 4, width)
+      let startX = tileStartX + Int(x) * TILE_SIZE
+      let endX = min(startX + Int(w) * TILE_SIZE, width)
       guard startX < endX else { continue }
 
       if color.alpha == 1.0 {
@@ -137,15 +139,15 @@ func drawWideTile(
       }
 
     case .aa(let x, let w, let color, let coverage, let offset):
-      let startX = tileStartX + Int(x) * 4  // actual pixel
-      let endX = min(startX + Int(w) * 4, width)
+      let startX = tileStartX + Int(x) * TILE_SIZE  // actual pixel
+      let endX = min(startX + Int(w) * TILE_SIZE, width)
       // print(" - Executing aa at x=\(startX)...\(endX)")
       guard startX < endX else { continue }
 
       let source = Color8(color)
       for column in 0..<(endX - startX) {
         // column major, 4 rows per pixel column
-        let columnStart = (Int(offset) * 4 + column) * 4
+        let columnStart = (Int(offset) * TILE_SIZE + column) * TILE_SIZE
         // print(coverage, columnStart)
         for row in 0..<rowCount {
           // TODO: fill rule, this is nonzero
@@ -173,12 +175,11 @@ struct Tile {
 // TODO: Borrowing iterator
 func generateTiles(lines: consuming [Line]) -> [Tile] {
   var tiles: [Tile] = []
-  let tileSize = 4  // 16; 4 by 4
 
   for line in lines {
     // print(line)
-    let yStart = Int(line.start.y) / tileSize
-    let yEnd = Int(line.end.y) / tileSize
+    let yStart = Int(line.start.y) / TILE_SIZE
+    let yEnd = Int(line.end.y) / TILE_SIZE
 
     // first bin line by y
     // for each segment: bin by x
@@ -187,7 +188,7 @@ func generateTiles(lines: consuming [Line]) -> [Tile] {
     // print("new dy=\(dy) yStart=\(yStart) yEnd=\(yEnd)")
     for y in stride(from: yStart, through: yEnd, by: dir) {
       // let yBinnedLine = Line(line.sample(t1), line.sample(t2))
-      let yBinnedLine = line.crop(y: Float(tileSize * y)...(Float(tileSize * (y + 1))))
+      let yBinnedLine = line.crop(y: Float(TILE_SIZE * y)...(Float(TILE_SIZE * (y + 1))))
 
       // ignore horizontal line
       // if yBinnedLine.start.y == yBinnedLine.end.y { continue }
@@ -195,20 +196,20 @@ func generateTiles(lines: consuming [Line]) -> [Tile] {
       // print(line, yBinnedLine)
       // print(" - \(yBinnedLine)")
 
-      let xStart = Int(yBinnedLine.start.x) / tileSize
-      let xEnd = Int(yBinnedLine.end.x) / tileSize
+      let xStart = Int(yBinnedLine.start.x) / TILE_SIZE
+      let xEnd = Int(yBinnedLine.end.x) / TILE_SIZE
       let dx = yBinnedLine.end.x - yBinnedLine.start.x
 
       let dir = if dx > 0 { 1 } else { -1 }
       for x in stride(from: xStart, through: xEnd, by: dir) {
-        let xBinnedLine = yBinnedLine.crop(x: Float(tileSize * x)...(Float(tileSize * (x + 1))))
+        let xBinnedLine = yBinnedLine.crop(x: Float(TILE_SIZE * x)...(Float(TILE_SIZE * (x + 1))))
         if xBinnedLine.isPoint { continue }
 
         let tile = Tile(
           x: UInt16(x),
           y: UInt16(y),
           line: xBinnedLine,
-          hasWinding: abs(min(xBinnedLine.start.y, xBinnedLine.end.y) - Float(y * tileSize))
+          hasWinding: abs(min(xBinnedLine.start.y, xBinnedLine.end.y) - Float(y * TILE_SIZE))
             < 0.00001
         )
         tiles.append(tile)
@@ -384,20 +385,20 @@ func computeCoverage(
   stripWidth: Int
 ) {
   // in pixel
-  let stripStartY = Float(tiles[unchecked: 0].y) * 4
+  let stripStartY = Float(tiles[unchecked: 0].y) * Float(TILE_SIZE)
 
   for i in tiles.indices {
     let line = tiles[unchecked: i].line
 
-    for ly in 0..<4 {
+    for ly in 0..<TILE_SIZE {
       let yBinnedLine = line.crop(y: stripStartY + Float(ly)...stripStartY + Float(ly + 1))
-      // print(yBinnedLine, ly + Int(stripStartY) * 4)
+      // print(yBinnedLine, ly + Int(stripStartY) * TILE_SIZE)
 
-      for lx in 0..<4 {
-        let tileStartX = Float(tiles[unchecked: i].x) * 4
+      for lx in 0..<TILE_SIZE {
+        let tileStartX = Float(tiles[unchecked: i].x) * Float(TILE_SIZE)
         let line = yBinnedLine.crop(x: tileStartX + Float(lx)...tileStartX + Float(lx + 1))
         // if its out of this pixel, continue
-        if line.xBounds.0 != lx + Int(tiles[unchecked: i].x) * 4 { continue }
+        if line.xBounds.0 != lx + Int(tiles[unchecked: i].x) * TILE_SIZE { continue }
         if line.isPoint { continue }
         // print("> [\(Int(tileStartX) + lx), \(Int(stripStartY) + ly)] \(line)")
 
@@ -426,7 +427,7 @@ func computeCoverage(
   let coverage = UnsafeMutablePointer<SIMD4<Float>>(OpaquePointer(scratchBuffer.baseAddress))!
   var acc: SIMD4<Float> = SIMD4(repeating: Float(background))
 
-  for x in 0..<stripWidth * 4 {
+  for x in 0..<stripWidth * TILE_SIZE {
     let f = fill[Int(x)] + acc
     fill[Int(x)] = f
     acc += coverage[Int(x)]

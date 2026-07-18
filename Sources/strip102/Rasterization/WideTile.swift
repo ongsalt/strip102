@@ -16,8 +16,8 @@ func generateWideTileCommands(
   ops: Span<DrawOp>,
   tileSize: Int
 ) -> WideTileCommands {
-  let wideTileXCount = Int((Float(width) / 256).rounded(.up))
-  let wideTileYCount = Int((Float(height) / 4).rounded(.up))
+  let wideTileXCount = Int((Float(width) / Float(WIDE_TILE_WIDTH)).rounded(.up))
+  let wideTileYCount = Int((Float(height) / Float(TILE_SIZE)).rounded(.up))
   let tileCount = wideTileXCount * wideTileYCount
 
   let threadCount = max(1, min(getRealCoreCount(), wideTileYCount))
@@ -115,13 +115,14 @@ private func walkStrips(
 
       // strip may got split
       // in wideTile index
-      let wideTileXStart = Int(strip.x * 4 / 256)
+      let wideTileXStart = Int(strip.x) * TILE_SIZE / WIDE_TILE_WIDTH
       // wideTileX where this end; same scale as wideTileXStart (wideTile-column units), computed
       // from the strip's last covered tile index rather than mixing tile-index and column scales
-      let wideTileXEnd = (Int(strip.x) + coverageWidth - 1) * 4 / 256
+      let wideTileXEnd = (Int(strip.x) + coverageWidth - 1) * TILE_SIZE / WIDE_TILE_WIDTH
 
       // 1 widetile is 64 4x4 tile, tile unit, relative to wideTile start
-      let x: UInt16 = UInt16(Int(strip.x) - wideTileXStart * 64)
+      let WIDTH = WIDE_TILE_WIDTH / TILE_SIZE
+      let x: UInt16 = UInt16(Int(strip.x) - wideTileXStart * (WIDTH))
 
       if strip.shouldFillLeft, let lastStripEnd, wideTileY == lastStripEnd.y {
         // fill the gap between the end of the previous strip and the start of
@@ -130,9 +131,9 @@ private func walkStrips(
         var fillX = lastStripEnd.x
         let fillEnd = Int(strip.x)
         while fillX < fillEnd {
-          let fillWideTileX = fillX / 64
-          let localX = fillX % 64
-          let filledWidth = min(fillEnd - fillX, 64 - localX)
+          let fillWideTileX = fillX / WIDTH
+          let localX = fillX % WIDTH
+          let filledWidth = min(fillEnd - fillX, WIDTH - localX)
           let fillWideTileIndex = fillWideTileX + wideTileY * wideTileXCount
           if fillWideTileIndex < tileCount {
             emit(
@@ -156,7 +157,7 @@ private func walkStrips(
         let wideTileIndex = wideTileX + wideTileY * wideTileXCount
         // in tile unit (w); only the first chunk starts mid-widetile (at currentX), so only it
         // has less than the full 64 tiles of room left before this widetile's right edge
-        let consumed = min(areaLeft, 64 - Int(currentX))
+        let consumed = min(areaLeft, WIDTH - Int(currentX))
 
         if wideTileIndex >= tileCount {
           break
