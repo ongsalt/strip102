@@ -73,20 +73,24 @@ func drawSparseSprips(
     // generate command in painter order
     let strips = strips[i]
     for strip in strips {
-      // in pixel
-      // strip.x * 4
+      // in tile unit (w)
       var coverageW =
         coverageBuffer.coverages[Int(strip.coverageIndex)].buffer.count / (tileSize * tileSize)
-      var x: UInt16 = (strip.x * UInt16(tileSize)) % 16  // % 256, but count in tile
+      // in tile size
 
       // strip may got split
+      // in wideTile index
       let wideTileXStart = Int(strip.x * 4 / 256)
+      // wideTileX where this end
       let wideTileXEnd = Int(strip.x) + coverageW * 4 / 256
       let wideTileY = Int(strip.y)
 
+      // 1 widetile is 64 4x4 tile
+      var x: UInt16 = UInt16(Int(strip.x) - wideTileXStart * 64)
+
       for wideTileX in wideTileXStart...wideTileXEnd {
         let wideTileIndex = wideTileX + wideTileY * wideTileXCount
-        let w = max(coverageW, 256)
+        let w = min(coverageW, 64)
         // TODO: verify this
         // in pixel, but it will always be divisible by 16 tho
 
@@ -97,7 +101,7 @@ func drawSparseSprips(
         wideTileCommands[wideTileIndex].append(
           WideTileDrawOp.aa(
             x: x,
-            w: UInt16(w / (tileSize * tileSize)),  // it tile unit
+            w: UInt16(w),  // it tile unit
             ops[i].color,
             index: UInt(strip.coverageIndex),
             offset: UInt16(0)
@@ -105,7 +109,7 @@ func drawSparseSprips(
         )
         // x will always be 0 in later iteration
         x = 0
-        coverageW -= 256
+        coverageW -= 64
       }
     }
   }
@@ -159,7 +163,7 @@ func drawWideTile(
     switch ops[i] {
     case .solid(let x, let w, let color):
       let startX = tileStartX + Int(x)
-      let endX = min(startX + Int(w), width)
+      let endX = min(startX + Int(w) * 4, width)
       guard startX < endX else { continue }
 
       if color.alpha == 1.0 {
@@ -184,8 +188,9 @@ func drawWideTile(
 
     case .aa(let x, let w, let color, let index, let offset):
       let coverage = coverageBuffer.coverages[Int(index)].buffer
-      let startX = tileStartX + Int(x)
-      let endX = min(startX + Int(w), width)
+      let startX = tileStartX + Int(x) * 4  // actual pixel
+      let endX = min(startX + Int(w) * 4, width)
+      print("Executing aa at x=\(startX)...\(endX)")
       guard startX < endX else { continue }
 
       let source = Color8(color)
@@ -318,6 +323,18 @@ class CoverageBuffer: @unchecked Sendable {
     }
   }
 
+  func print(index: Int) {
+    let c = coverages[index]
+    let w = c.buffer.count / tileSize
+    // column majot
+    for y in 0..<tileSize {
+      for x in 0..<w {
+        Swift.print("\(c.buffer[x * tileSize + y]) ", terminator: "")
+      }
+      Swift.print()
+    }
+  }
+
   deinit {
     buffer.deallocate()
   }
@@ -364,12 +381,19 @@ func generateStrips(
 
     // allocate buffer, known size
     let coverage = coverageBuffer.allocate(stripWidth)
+    print(
+      "Compute coverage: background=\(w), tiles[\(start)...\(i)], x: \(tiles[start].x)...\(tiles[i].x)"
+    )
+    let range = tiles.extracting(start...i)
     computeCoverage(
-      tiles: tiles.extracting(start...i),
+      tiles: range,
       tileSize: coverageBuffer.tileSize,
       buffer: coverage.buffer,
-      scratchBuffer: scratchBuffer
+      scratchBuffer: scratchBuffer,
+      background: w,
     )
+
+    coverageBuffer.print(index: coverage.index)
 
     // TODO: fill rule
     strips.append(Strip(x: x, y: y, coverageIndex: UInt16(coverage.index), shouldFillLeft: w != 0))
@@ -385,32 +409,41 @@ func computeCoverage(
   // inclusive
   tileSize: Int,
   buffer: UnsafeMutableBufferPointer<Float16>,  // fill
-  scratchBuffer: UnsafeMutableBufferPointer<Float16>  // coverage
+  scratchBuffer: UnsafeMutableBufferPointer<Float16>,  // coverage
+  background: Int
 ) {
+  // in pixel
   let stripStartY = Float(tiles[0].y) * 4
 
   for i in tiles.indices {
     let line = tiles[unchecked: i].line
+    print("> \(line)")
 
     for ly in 0..<4 {
       let yBinnedLine = line.crop(y: stripStartY + Float(ly)...stripStartY + Float(ly + 1))
+      if yBinnedLine.start.y == yBinnedLine.end.y { continue }
+      // print(yBinnedLine, ly + Int(stripStartY) * 4)
+      // if line.yBounds.0 != ly + Int(stripStartY) * 4 { continue }
 
       for lx in 0..<4 {
         let tileStartX = Float(tiles[i].x) * 4
         let line = yBinnedLine.crop(x: tileStartX + Float(lx)...tileStartX + Float(lx + 1))
+        // if its out of this pixel, continu
+        if line.xBounds.0 != lx + Int(tiles[i].x) * 4 { continue }
 
         // crop line into; math in f32, f16 only at the store
         let dy = line.end.y - line.start.y
-        let xMid = (line.start.x + line.end.x) / 2 - tileStartX
+        let xMid = (line.start.x + line.end.x) / 2 - (tileStartX + Float(lx))
 
         //
         // coverage
         let offset = Int(tiles[i].x - tiles[0].x) * tileSize * tileSize + lx * tileSize + ly
         // print(" - \(offset), \(buffer.count)")
-        scratchBuffer[offset] = Float16(Float(scratchBuffer[offset]) + dy)
+        scratchBuffer[offset] += Float16(dy)
         // trapezoid, see https://www.youtube.com/watch?v=B9bztU1sTFA
         // fill
-        buffer[offset] = Float16(Float(buffer[offset]) + dy * (1 - xMid))
+        // Float16(dy * (1 - xMid))
+        buffer[offset] += Float16(dy)
       }
     }
   }
@@ -420,8 +453,8 @@ func computeCoverage(
   var acc: SIMD4<Float> = .zero
 
   for x in tiles[0].x * 4..<tiles[tiles.count - 1].x * 4 {
-    fill[Int(x)] = SIMD4<Float16>(SIMD4<Float>(fill[Int(x)]) + acc)
-    acc += SIMD4<Float>(coverage[Int(x)])
+    // fill[Int(x)] = SIMD4<Float16>(SIMD4<Float>(fill[Int(x)]) + acc + Float(background))
+    // acc += SIMD4<Float>(coverage[Int(x)])
   }
 
 }
@@ -444,7 +477,11 @@ extension Line {
     let t1 = ((range.lowerBound - self.start.y) / dy).clamped(from: 0.0, to: 1.0)
     let t2 = ((range.upperBound - self.start.y) / dy).clamped(from: 0.0, to: 1.0)
 
-    return Line(sample(t1), sample(t2))
+    return if start.y > end.y {
+      Line(sample(t2), sample(t1))
+    } else {
+      Line(sample(t1), sample(t2))
+    }
   }
 
   func crop(x range: ClosedRange<Float>) -> Line {
@@ -456,7 +493,11 @@ extension Line {
     let t1 = ((range.lowerBound - self.start.x) / dx).clamped(from: 0.0, to: 1.0)
     let t2 = ((range.upperBound - self.start.x) / dx).clamped(from: 0.0, to: 1.0)
 
-    return Line(sample(t1), sample(t2))
+    return if start.x > end.x {
+      Line(sample(t2), sample(t1))
+    } else {
+      Line(sample(t1), sample(t2))
+    }
   }
 
 }
