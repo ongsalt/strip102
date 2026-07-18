@@ -35,10 +35,10 @@ func drawSparseSprips(
         let lines = ops[i].path.breakIntoLines(transform: ops[i].transform, tolerance: 0.25)
         let tiles = generateTiles(lines: lines)
 
-        print("tiles")
-        for t in tiles {
-          print(" - \(t)")
-        }
+        // print("tiles")
+        // for t in tiles {
+        //   print(" - \(t)")
+        // }
 
         // also generate coverage
         let strips = generateStrips(
@@ -72,10 +72,16 @@ func drawSparseSprips(
   for i in ops.indices {
     // generate command in painter order
     let strips = strips[i]
+
+    // in tile unit (x, y), end of the last strip emitted on this row
+    var lastStripEnd: (x: Int, y: Int)?
     for strip in strips {
+      // strip is ordered by x anyway, so by the time we generate .solid it gonna be well form
+
       // in tile unit (w)
-      var coverageW =
+      let coverageWidth =
         coverageBuffer.coverages[Int(strip.coverageIndex)].buffer.count / (tileSize * tileSize)
+      var coverageW = coverageWidth
       // in tile size
 
       // strip may got split
@@ -85,8 +91,32 @@ func drawSparseSprips(
       let wideTileXEnd = Int(strip.x) + coverageW * 4 / 256
       let wideTileY = Int(strip.y)
 
-      // 1 widetile is 64 4x4 tile
+      // 1 widetile is 64 4x4 tile, tile unit
       var x: UInt16 = UInt16(Int(strip.x) - wideTileXStart * 64)
+
+      if strip.shouldFillLeft, let lastStripEnd, wideTileY == lastStripEnd.y {
+        // fill the gap between the end of the previous strip and the start of
+        // this one with the winding number carried over (background), splitting
+        // at wide tile boundaries since a draw command only lives in one wide tile
+        var fillX = lastStripEnd.x
+        let fillEnd = Int(strip.x)
+        while fillX < fillEnd {
+          let fillWideTileX = fillX / 64
+          let localX = fillX % 64
+          let filledWidth = min(fillEnd - fillX, 64 - localX)
+          let fillWideTileIndex = fillWideTileX + wideTileY * wideTileXCount
+          if fillWideTileIndex < wideTileCommands.count {
+            wideTileCommands[fillWideTileIndex].append(
+              WideTileDrawOp.solid(
+                x: UInt16(localX),
+                w: UInt16(filledWidth),
+                ops[i].color
+              )
+            )
+          }
+          fillX += filledWidth
+        }
+      }
 
       for wideTileX in wideTileXStart...wideTileXEnd {
         let wideTileIndex = wideTileX + wideTileY * wideTileXCount
@@ -113,6 +143,8 @@ func drawSparseSprips(
         x = 0
         coverageW -= w
       }
+
+      lastStripEnd = (x: Int(strip.x) + coverageWidth, y: wideTileY)
     }
   }
 
@@ -121,7 +153,9 @@ func drawSparseSprips(
 
   let _wideTileCommands = wideTileCommands
   for cmds in _wideTileCommands {
-    // print(cmds.count)
+    // if !cmds.isEmpty {
+    //   print(cmds)
+    // }
   }
 
   // executing thos
@@ -165,13 +199,13 @@ func drawWideTile(
   for i in ops.indices {
     switch ops[i] {
     case .solid(let x, let w, let color):
-      let startX = tileStartX + Int(x)
+      let startX = tileStartX + Int(x) * 4
       let endX = min(startX + Int(w) * 4, width)
       guard startX < endX else { continue }
 
       if color.alpha == 1.0 {
         let pixel: Pixel = [
-          UInt8(color.red), UInt8(color.green), UInt8(color.blue), 255,
+          UInt8(color.red * 255), UInt8(color.green * 255), UInt8(color.blue * 255), 255,
         ]
         for row in 0..<rowCount {
           let rowStart = (tileStartY + row) * width
@@ -246,8 +280,8 @@ func generateTiles(lines: consuming [Line]) -> [Tile] {
       // ignore horizontal line
       // if yBinnedLine.start.y == yBinnedLine.end.y { continue }
 
-      print(line, yBinnedLine)
-      print(" - \(yBinnedLine)")
+      // print(line, yBinnedLine)
+      // print(" - \(yBinnedLine)")
 
       let xStart = Int(yBinnedLine.start.x) / tileSize
       let xEnd = Int(yBinnedLine.end.x) / tileSize
@@ -262,10 +296,10 @@ func generateTiles(lines: consuming [Line]) -> [Tile] {
           x: UInt16(x),
           y: UInt16(y),
           line: xBinnedLine,
-          hasWinding: xBinnedLine.start.y == Float(y * tileSize)
+          hasWinding: abs(xBinnedLine.start.y - Float(y * tileSize)) < 0.001
         )
         tiles.append(tile)
-        print(" > \(tile)")
+        // print(" > \(tile)")
       }
     }
   }
@@ -361,23 +395,31 @@ func generateStrips(
 ) -> [Strip] {
   var strips: [Strip] = []
   var winding = 0
+  var lastY = 0
 
   var i = 0
   while i < tiles.count {
+    if lastY != tiles[i].y {
+      winding = 0
+      print("reset winding \(winding) \(tiles[i])")
+    }
+    lastY = Int(tiles[i].y)
+
     let start = i
     let w = winding
     let x = tiles[i].x
     let y = tiles[i].y
 
     while i < tiles.count - 1 {
+      if tiles[i].hasWinding {
+        winding += tiles[i].line.direction > 0 ? 1 : -1
+        print("winding=\(winding)")
+      }
+
       let next = tiles[i + 1]
       if next.y == tiles[i].y && next.x - tiles[i].x <= 1 {
-        if next.hasWinding {
-          winding += next.line.direction > 0 ? 1 : 0
-        }
         i += 1
       } else {
-        winding = 0
         break
       }
     }
@@ -403,7 +445,7 @@ func generateStrips(
       background: w,
     )
 
-    coverageBuffer.print(index: coverage.index)
+    // coverageBuffer.print(index: coverage.index)
 
     // TODO: fill rule
     strips.append(Strip(x: x, y: y, coverageIndex: UInt16(coverage.index), shouldFillLeft: w != 0))
@@ -438,7 +480,7 @@ func computeCoverage(
         // if its out of this pixel, continue
         if line.xBounds.0 != lx + Int(tiles[i].x) * 4 { continue }
         if line.isPoint { continue }
-        print("> [\(Int(tileStartX) + lx), \(Int(stripStartY) + ly)] \(line)")
+        // print("> [\(Int(tileStartX) + lx), \(Int(stripStartY) + ly)] \(line)")
 
         // crop line into; math in f32, f16 only at the store
         let dy = line.end.y - line.start.y
@@ -465,10 +507,8 @@ func computeCoverage(
   var acc: SIMD4<Float> = .zero
 
   for x in 0..<(tiles[tiles.count - 1].x - tiles[0].x + 1) * 4 {
-    let f = fill[Int(x)]
     fill[Int(x)] = SIMD4<Float16>(SIMD4<Float>(fill[Int(x)]) + acc + Float(background))
     acc += SIMD4<Float>(coverage[Int(x)])
-    print(x, acc)
   }
 
 }

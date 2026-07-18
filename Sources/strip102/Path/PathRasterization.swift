@@ -125,7 +125,7 @@ public func fillScanline(
             continue
           }
 
-          print("[\(x) \(y)] \(cell)")
+          // print("[\(x) \(y)] \(cell)")
           let dy = cell.end.y - cell.start.y
           let xMid = (cell.start.x + cell.end.x) / 2 - Float(x)
 
@@ -134,7 +134,7 @@ public func fillScanline(
           // trapezoid, see https://www.youtube.com/watch?v=B9bztU1sTFA
           fill[unchecked: x] += dy * (1 - xMid)
 
-          print(" > coverage:\(coverage[x]) fill:\(fill[x])")
+          // print(" > coverage:\(coverage[x]) fill:\(fill[x])")
         }
       }
     }
