@@ -67,6 +67,13 @@ public func fillScanline(
   // quantize once per fill, not once per pixel
   let source = Color8(color)
 
+  // x-range still holding nonzero values from the last row that wrote to the tables (empty
+  // when dirtyStart > dirtyEnd). Only that range needs clearing before the next row's
+  // accumulation, instead of the whole `w`-wide table — a shape narrow relative to the
+  // canvas would otherwise pay for zeroing columns it never touches, every row.
+  var dirtyStart = 0
+  var dirtyEnd = -1
+
   for y in minY...maxY {
     // update active segment list, sorted by x
     if let starting = linesByStartY[y] {
@@ -82,8 +89,12 @@ public func fillScanline(
     if !shouldSkip {
       var fill = fillTable.mutableSpan
       var coverage = coverageTable.mutableSpan
-      fill.update(repeating: 0)
-      coverage.update(repeating: 0)
+      if dirtyStart <= dirtyEnd {
+        for x in dirtyStart...dirtyEnd {
+          fill[unchecked: x] = 0
+          coverage[unchecked: x] = 0
+        }
+      }
 
       for lineIndex in activeSegments {
         // clip it to the y-strip
@@ -125,6 +136,11 @@ public func fillScanline(
     }
 
     guard !shouldSkip, rowStart <= rowEnd else { continue }
+
+    // this row's writes are the only nonzero region now, since the old dirty range (if any)
+    // was cleared above before accumulating into this one
+    dirtyStart = rowStart
+    dirtyEnd = rowEnd
 
     // resolve pass
     let fill = fillTable.span
