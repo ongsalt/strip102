@@ -63,6 +63,6 @@ struct strip102: ParsableCommand {
         var canvas = Canvas(width: 1000, height: 1000, fillAlgorithm: algorithm)
         canvas.draw(path, color: .blue)
         canvas.flush()
-        try! canvas.save(to: "idk.pam")
+        try! canvas.save(to: "idk.png")
     }
 }

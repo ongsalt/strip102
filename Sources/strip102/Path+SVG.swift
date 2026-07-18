@@ -82,11 +82,11 @@ func importSvg(
 
   var canvas = rasterizeSvg(parsed, scale: scale, algorithm: algorithm)
 
-  let pamPath =
+  let pngPath =
     output
-    ?? URL(fileURLWithPath: filename).deletingPathExtension().appendingPathExtension("pam").path
+    ?? URL(fileURLWithPath: filename).deletingPathExtension().appendingPathExtension("png").path
 
-  try! canvas.save(to: pamPath)
+  try! canvas.save(to: pngPath)
 
   print("importSvg(\(filename)) took \(clock.now - start)")
 }
@@ -133,38 +133,3 @@ func benchSvg(
   )
 }
 
-func convertToPng(ppmPath: String, pngPath: String) {
-  let process = Process()
-  process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-  process.arguments = ["ffmpeg", "-nostdin", "-y", "-i", ppmPath, pngPath]
-  process.standardInput = FileHandle.nullDevice
-  process.standardOutput = FileHandle.nullDevice
-  process.standardError = FileHandle.nullDevice
-
-  do {
-    try process.run()
-    process.waitUntilExit()
-    guard process.terminationStatus == 0 else {
-      fatalError("ffmpeg exited with status \(process.terminationStatus)")
-    }
-  } catch {
-    fatalError("Cannot run ffmpeg: \(error)")
-  }
-}
-
-/// Writes a binary PAM (P7, RGB_ALPHA). Unlike PPM, PAM keeps the alpha channel, so the AA
-/// living in partial coverage makes it into the file.
-func writePam(pixels: borrowing Span<Pixel>, width: Int, height: Int, to filename: String) throws {
-  precondition(pixels.count >= width * height, "pixel buffer smaller than the image")
-
-  var data = Data(
-    "P7\nWIDTH \(width)\nHEIGHT \(height)\nDEPTH 4\nMAXVAL 255\nTUPLTYPE RGB_ALPHA\nENDHDR\n".utf8)
-  data.reserveCapacity(data.count + width * height * 4)
-
-  for i in 0..<(width * height) {
-    let pixel = pixels[i]
-    data.append(contentsOf: [pixel[0], pixel[1], pixel[2], pixel[3]])
-  }
-
-  try data.write(to: URL(fileURLWithPath: filename))
-}
