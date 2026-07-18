@@ -8,12 +8,12 @@ perf script | ./FlameGraph/stackcollapse-perf.pl | swift demangle | ./FlameGraph
 
 # Benchmark
 
-### Spare strip (our implementation, not vello)
+## Spare strip (our implementation, not vello)
 ```
 bench tiger.svg x1000: total=8.33663389s, avg=8.336634ms, min=6.757702ms, max=22.461194ms
 ```
 
-### Scanline
+## Scanline
 ```
 bench tiger.svg x1000: total=13.91991820s, avg=13.919918ms, min=13.522885ms, max=22.299697ms
 ```

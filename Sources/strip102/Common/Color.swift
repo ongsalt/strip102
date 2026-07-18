@@ -98,3 +98,25 @@ extension Color {
     return new
   }
 }
+
+/// RGBA8 straight-alpha color, quantized straight from `Color` with no linear-light conversion.
+public struct Color8: Sendable, Equatable, Hashable {
+  public var red: UInt8
+  public var green: UInt8
+  public var blue: UInt8
+  public var alpha: UInt8
+
+  public init(red: UInt8, green: UInt8, blue: UInt8, alpha: UInt8 = 255) {
+    self.red = red
+    self.green = green
+    self.blue = blue
+    self.alpha = alpha
+  }
+
+  public init(_ color: Color) {
+    self.red = UInt8((color.red.clamped(from: 0, to: 1) * 255).rounded())
+    self.green = UInt8((color.green.clamped(from: 0, to: 1) * 255).rounded())
+    self.blue = UInt8((color.blue.clamped(from: 0, to: 1) * 255).rounded())
+    self.alpha = UInt8((color.alpha.clamped(from: 0, to: 1) * 255).rounded())
+  }
+}
