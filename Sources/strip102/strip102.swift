@@ -47,9 +47,11 @@ struct strip102: ParsableCommand {
         // path.line(to: Point(15, 2))
 
 
-        path.line(to: Point(4, 0))
-        path.line(to: Point(4, 4))
-        path.line(to: Point(0, 4))
+        let offset = Point(1, 1)
+        path.move(to: offset)
+        path.line(to: Point(4, 0) + offset)
+        path.line(to: Point(4, 4) + offset)
+        path.line(to: Point(0, 4) + offset)
 
         var canvas = Canvas(width: 100, height: 100, fillAlgorithm: algorithm)
         canvas.draw(path, color: .blue)

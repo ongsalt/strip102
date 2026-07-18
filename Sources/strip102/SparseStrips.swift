@@ -237,7 +237,10 @@ func generateTiles(lines: consuming [Line]) -> [Tile] {
     for y in stride(from: yStart, through: yEnd, by: dir) {
       // let yBinnedLine = Line(line.sample(t1), line.sample(t2))
       let yBinnedLine = line.crop(y: Float(tileSize * y)...(Float(tileSize * (y + 1))))
-      if yBinnedLine.isPoint { continue }
+
+      // ignore horizontal line
+      if yBinnedLine.start.y == yBinnedLine.end.y { continue }
+
       print(line, yBinnedLine)
       // print(" - \(yBinnedLine)")
 
@@ -314,7 +317,7 @@ class CoverageBuffer: @unchecked Sendable {
     let count = width * tileSize * tileSize
     return current.withLock {
       let prev = $0
-      $0 += 1
+      $0 += count
       let newBuffer =
         UnsafeMutableBufferPointer(start: buffer.baseAddress! + prev, count: count)
       let c = Coverage(index: coverages.count, buffer: newBuffer)
@@ -375,15 +378,16 @@ func generateStrips(
 
     // zeroing only needed
     let stripWidth = Int(tiles[i].x - tiles[start].x + 1)
-    scratchBuffer.extracting(0..<stripWidth * coverageBuffer.tileSize * coverageBuffer.tileSize)
-      .update(repeating: 0.0)
-    // scratchBuffer.initialize(repeating: 0.0)
+    // scratchBuffer.extracting(0..<stripWidth * coverageBuffer.tileSize * coverageBuffer.tileSize)
+    //   .update(repeating: 0.0)
+    scratchBuffer.initialize(repeating: 0.0)
 
     // allocate buffer, known size
     let coverage = coverageBuffer.allocate(stripWidth)
     print(
-      "Compute coverage: background=\(w), tiles[\(start)...\(i)], x: \(tiles[start].x)...\(tiles[i].x)"
+      "Compute coverage: background=\(w) stripWidth=\(stripWidth), tiles[\(start)...\(i)], x: \(tiles[start].x)...\(tiles[i].x) y: \(tiles[start].y)...\(tiles[i].y)"
     )
+
     let range = tiles.extracting(start...i)
     computeCoverage(
       tiles: range,
@@ -417,44 +421,43 @@ func computeCoverage(
 
   for i in tiles.indices {
     let line = tiles[unchecked: i].line
-    print("> \(line)")
 
     for ly in 0..<4 {
       let yBinnedLine = line.crop(y: stripStartY + Float(ly)...stripStartY + Float(ly + 1))
       if yBinnedLine.start.y == yBinnedLine.end.y { continue }
       // print(yBinnedLine, ly + Int(stripStartY) * 4)
-      // if line.yBounds.0 != ly + Int(stripStartY) * 4 { continue }
 
       for lx in 0..<4 {
         let tileStartX = Float(tiles[i].x) * 4
         let line = yBinnedLine.crop(x: tileStartX + Float(lx)...tileStartX + Float(lx + 1))
-        // if its out of this pixel, continu
+        // if its out of this pixel, continue
         if line.xBounds.0 != lx + Int(tiles[i].x) * 4 { continue }
+        // print("> [\(lx), \(ly)] \(line)")
+
 
         // crop line into; math in f32, f16 only at the store
         let dy = line.end.y - line.start.y
         let xMid = (line.start.x + line.end.x) / 2 - (tileStartX + Float(lx))
 
-        //
-        // coverage
         let offset = Int(tiles[i].x - tiles[0].x) * tileSize * tileSize + lx * tileSize + ly
+        // coverage
         // print(" - \(offset), \(buffer.count)")
         scratchBuffer[offset] += Float16(dy)
         // trapezoid, see https://www.youtube.com/watch?v=B9bztU1sTFA
         // fill
-        // Float16(dy * (1 - xMid))
-        buffer[offset] += Float16(dy)
+        // buffer[offset] += Float16(dy)
+        buffer[offset] += Float16(dy * (1 - xMid))
       }
     }
   }
 
-  let fill = UnsafeMutablePointer<SIMD4<Float16>>(OpaquePointer(buffer.baseAddress))!
+  let fill: UnsafeMutablePointer<SIMD4<Float16>> = UnsafeMutablePointer<SIMD4<Float16>>(OpaquePointer(buffer.baseAddress))!
   let coverage = UnsafeMutablePointer<SIMD4<Float16>>(OpaquePointer(scratchBuffer.baseAddress))!
   var acc: SIMD4<Float> = .zero
 
-  for x in tiles[0].x * 4..<tiles[tiles.count - 1].x * 4 {
-    // fill[Int(x)] = SIMD4<Float16>(SIMD4<Float>(fill[Int(x)]) + acc + Float(background))
-    // acc += SIMD4<Float>(coverage[Int(x)])
+  for x in tiles[0].x * 4..<tiles[tiles.count - 1].x * 4 + 4 {
+    fill[Int(x)] = SIMD4<Float16>(SIMD4<Float>(fill[Int(x)]) + acc + Float(background))
+    acc += SIMD4<Float>(coverage[Int(x)])
   }
 
 }
