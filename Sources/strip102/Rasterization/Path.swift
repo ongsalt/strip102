@@ -1,25 +1,7 @@
 import Foundation
 
-// MARK: - Curves
-
-/// a cusp keeps failing the flatness test even as the chord shrinks to nothing, so cap the recursion
-
-// MARK: - Segments
-
-// MARK: - Path
-
-/// Unlike the usual command list, a `Path` stores its segments already resolved: every segment
-/// carries its own start point, so a subpath boundary is just a discontinuity between
-/// `segments[i - 1].end` and `segments[i].start` (what a `moveTo` used to produce).
-
-/// Walks the segment list and cuts it into subpaths, transforming each segment on the way out.
-/// A subpath ends when the next segment does not start where this one ended, or when the pen
-/// comes back to the subpath's start point. Subpaths left open are closed with a line, since a
-/// fill only makes sense on a closed contour.
-
-// MARK: - Line
-
 public typealias Point = SIMD2<Float>
+
 extension SIMD2 where Scalar == Float {
   @inline(__always)
   public func lerp(to other: Self, _ t: Float) -> Self {
@@ -37,6 +19,9 @@ extension SIMD2 where Scalar == Float {
     x * x + y * y
   }
 }
+
+// MARK: - Curves
+
 public struct QuadraticBezierCurve: Sendable, Equatable {
   public var start: Point
   public var control: Point
@@ -104,6 +89,7 @@ public struct QuadraticBezierCurve: Sendable, Equatable {
     walk(self, 0)
   }
 }
+
 public struct CubicBezierCurve: Sendable, Equatable {
   public var start: Point
   public var control1: Point
@@ -174,18 +160,104 @@ public struct CubicBezierCurve: Sendable, Equatable {
     walk(self, 0)
   }
 }
+
+/// An elliptical arc stored as a center and two axis vectors instead of a radius, so it stays
+/// closed under affine transforms: `P(θ) = center + cos(θ) * xAxis + sin(θ) * yAxis`.
+/// The sweep direction follows the sign of `endAngle - startAngle`.
+public struct Arc: Sendable, Equatable {
+  public var center: Point
+  /// vector from `center` to the point at angle 0
+  public var xAxis: Point
+  /// vector from `center` to the point at angle π/2
+  public var yAxis: Point
+  public var startAngle: Float
+  public var endAngle: Float
+
+  public init(center: Point, xAxis: Point, yAxis: Point, startAngle: Float, endAngle: Float) {
+    self.center = center
+    self.xAxis = xAxis
+    self.yAxis = yAxis
+    self.startAngle = startAngle
+    self.endAngle = endAngle
+  }
+
+  /// circular arc
+  public init(center: Point, radius: Float, startAngle: Angle, endAngle: Angle) {
+    self.init(
+      center: center,
+      xAxis: Point(radius, 0),
+      yAxis: Point(0, radius),
+      startAngle: startAngle.radians,
+      endAngle: endAngle.radians)
+  }
+
+  public var start: Point { sample(0) }
+  public var end: Point { sample(1) }
+
+  public func sample(_ t: Float) -> Point {
+    let angle = startAngle + (endAngle - startAngle) * t
+    return center + cos(angle) * xAxis + sin(angle) * yAxis
+  }
+
+  public func reversed() -> Arc {
+    Arc(center: center, xAxis: xAxis, yAxis: yAxis, startAngle: endAngle, endAngle: startAngle)
+  }
+
+  public func transformed(by transform: Affine) -> Arc {
+    Arc(
+      center: transform.apply(center),
+      xAxis: transform.applyVector(xAxis),
+      yAxis: transform.applyVector(yAxis),
+      startAngle: startAngle,
+      endAngle: endAngle)
+  }
+
+  /// polyline that stays within `tolerance` of the arc
+  public func flattenUniform(tolerance: Float) -> [Point] {
+    var points = [start]
+    writeFlattened(tolerance: tolerance, into: &points)
+    return points
+  }
+
+  /// appends every point after `start`, so the caller can chain segments without duplicating joints
+  public func writeFlattened(tolerance: Float, into output: inout [Point]) {
+    // every point sits within sqrt(|xAxis|² + |yAxis|²) of the center, even when the axes
+    // are sheared (Cauchy-Schwarz on cos·xAxis + sin·yAxis)
+    let radius = (xAxis.lengthSquared + yAxis.lengthSquared).squareRoot()
+    let sweep = abs(endAngle - startAngle)
+
+    var steps = 1
+    if radius > tolerance {
+      // a chord spanning dθ sags r * (1 - cos(dθ / 2)) below the arc
+      let maxStep = 2 * acos(1 - tolerance / radius)
+      steps = max(Int((sweep / maxStep).rounded(.up)), 1)
+    }
+
+    for i in 1...steps {
+      output.append(sample(Float(i) / Float(steps)))
+    }
+  }
+}
+
+/// a cusp keeps failing the flatness test even as the chord shrinks to nothing, so cap the recursion
 private let maxSubdivisionDepth = 20
+
 public let defaultFlattenTolerance: Float = 0.5
+
+// MARK: - Segments
+
 public enum PathSegment: Sendable, Equatable {
   case line(Line)
   case quadratic(QuadraticBezierCurve)
   case cubic(CubicBezierCurve)
+  case arc(Arc)
 
   public var start: Point {
     switch self {
     case .line(let line): line.start
     case .quadratic(let curve): curve.start
     case .cubic(let curve): curve.start
+    case .arc(let arc): arc.start
     }
   }
 
@@ -194,6 +266,7 @@ public enum PathSegment: Sendable, Equatable {
     case .line(let line): line.end
     case .quadratic(let curve): curve.end
     case .cubic(let curve): curve.end
+    case .arc(let arc): arc.end
     }
   }
 
@@ -208,6 +281,8 @@ public enum PathSegment: Sendable, Equatable {
       .cubic(
         CubicBezierCurve(
           start: curve.end, control1: curve.control2, control2: curve.control1, end: curve.start))
+    case .arc(let arc):
+      .arc(arc.reversed())
     }
   }
 
@@ -228,6 +303,8 @@ public enum PathSegment: Sendable, Equatable {
           control1: transform.apply(curve.control1),
           control2: transform.apply(curve.control2),
           end: transform.apply(curve.end)))
+    case .arc(let arc):
+      .arc(arc.transformed(by: transform))
     }
   }
 
@@ -243,6 +320,10 @@ public enum PathSegment: Sendable, Equatable {
       var points = [curve.start]
       curve.writeFlattened(tolerance: tolerance, into: &points)
       appendLines(points, into: &output)
+    case .arc(let arc):
+      var points = [arc.start]
+      arc.writeFlattened(tolerance: tolerance, into: &points)
+      appendLines(points, into: &output)
     }
   }
 
@@ -254,10 +335,17 @@ public enum PathSegment: Sendable, Equatable {
     }
   }
 }
+
 public enum FillRule: Sendable, Equatable {
   case nonZero
   case evenOdd
 }
+
+// MARK: - Path
+
+/// Unlike the usual command list, a `Path` stores its segments already resolved: every segment
+/// carries its own start point, so a subpath boundary is just a discontinuity between
+/// `segments[i - 1].end` and `segments[i].start` (what a `moveTo` used to produce).
 public struct Path: Sendable, Equatable {
   public var segments: [PathSegment]
   public var fillRule: FillRule
@@ -298,6 +386,22 @@ public struct Path: Sendable, Equatable {
     currentPoint = point
   }
 
+  /// canvas-style: when the pen is not already at the arc's start, a line connects them first
+  public mutating func arc(center: Point, radius: Float, startAngle: Angle, endAngle: Angle) {
+    arc(Arc(center: center, radius: radius, startAngle: startAngle, endAngle: endAngle))
+  }
+
+  /// canvas-style: when the pen is not already at the arc's start, a line connects them first
+  public mutating func arc(_ arc: Arc) {
+    if segments.isEmpty {
+      move(to: arc.start)
+    } else if currentPoint != arc.start {
+      segments.append(.line(Line(currentPoint, arc.start)))
+    }
+    segments.append(.arc(arc))
+    currentPoint = arc.end
+  }
+
   public mutating func close() {
     if currentPoint != subPathStart {
       segments.append(.line(Line(currentPoint, subPathStart)))
@@ -326,6 +430,7 @@ public struct Path: Sendable, Equatable {
     return out
   }
 }
+
 public struct SubPath: Sendable, Equatable {
   public var segments: [PathSegment]
 
@@ -367,6 +472,11 @@ public struct SubPath: Sendable, Equatable {
     return out
   }
 }
+
+/// Walks the segment list and cuts it into subpaths, transforming each segment on the way out.
+/// A subpath ends when the next segment does not start where this one ended, or when the pen
+/// comes back to the subpath's start point. Subpaths left open are closed with a line, since a
+/// fill only makes sense on a closed contour.
 public struct SubPathSequence: Sequence, IteratorProtocol {
   private let segments: [PathSegment]
   private let transform: Affine
@@ -404,6 +514,9 @@ public struct SubPathSequence: Sequence, IteratorProtocol {
     return SubPath(segments: out)
   }
 }
+
+// MARK: - Line
+
 public struct Line: Sendable, Equatable {
   public var start: Point
   public var end: Point

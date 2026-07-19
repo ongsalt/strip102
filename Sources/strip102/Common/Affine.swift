@@ -60,6 +60,14 @@ public struct Affine: Sendable, Equatable {
         return SIMD2(v.x, v.y)
     }
 
+    /// transforms a 2D direction, treating it as (x, y, 0, 0); translation does not apply
+    @inline(__always)
+    public func applyVector(_ vector: SIMD2<Float>) -> SIMD2<Float> {
+        if self == .identity { return vector }
+        let v = multiplyVector(SIMD4(lowHalf: vector, highHalf: SIMD2(0, 0)))
+        return SIMD2(v.x, v.y)
+    }
+
     public func multiplied(by other: Affine) -> Affine {
         return Affine(
             col0: multiplyVector(other.col0),
