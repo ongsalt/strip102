@@ -91,29 +91,21 @@ class SparseStripRenderer: @unchecked Sendable {
 
     // parallel: rasterize the misses, each worker allocating from its own arena
     // index = miss index
-    let built: [CachedStrips] = Array(unsafeUninitializedCapacity: misses.count) {
-      [coverageArenas, misses] out, wrote in
-      wrote = misses.count
-      nonisolated(unsafe) let buffer = out
-      nonisolated(unsafe) let scratchBuffers = self.scratchBuffers
+    let built = misses.parallelMap(threads: coreCount) { [self] i, thread in
+      let arena = coverageArenas[thread]
+      let scratchBuffer = scratchBuffers[thread]
 
-      parallelFor(count: misses.count, threads: coreCount) { task, thread in
-        let arena = coverageArenas[thread]
-        let scratchBuffer = scratchBuffers[thread]
-        let i = misses[task]
-
-        let lines = ops[unchecked: i].path.breakIntoLines(
-          transform: ops[unchecked: i].transform, tolerance: 0.25)
-        let tileSet = generateTiles(lines: lines, width: width, height: height)
-        let strips = generateStrips(
-          tiles: tileSet.tiles.span,
-          rowBackgrounds: tileSet.rowBackgrounds,
-          arena: arena,
-          scratchBuffer: scratchBuffer
-        )
-
-        buffer.initializeElement(at: task, to: CachedStrips(strips: strips, arena: arena))
-      }
+      let lines = ops[unchecked: i].path.breakIntoLines(
+        transform: ops[unchecked: i].transform, tolerance: 0.25)
+      let tileSet = generateTiles(lines: lines, width: width, height: height)
+      let strips = generateStrips(
+        tiles: tileSet.tiles.span,
+        rowBackgrounds: tileSet.rowBackgrounds,
+        arena: arena,
+        scratchBuffer: scratchBuffer
+      )
+      
+      return CachedStrips(strips: strips, arena: arena)
     }
 
     // serial publish. A key hit twice in one frame just replaces; the orphaned entry stays

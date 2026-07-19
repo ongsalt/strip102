@@ -74,3 +74,16 @@ func parallelFor(count: Int, threads: Int, _ body: (_ task: Int, _ thread: Int) 
     }
   }
 }
+
+extension Collection where Index == Int {
+  func parallelMap<Output>(threads: Int, _ body: (_ item: Element, _ thread: Int) -> Output) -> [Output] {
+    Array(unsafeUninitializedCapacity: self.count) { out, wrote in
+      wrote = self.count
+      nonisolated(unsafe) let buffer = out
+      parallelFor(count: self.count, threads: threads) { index, thread in
+        let res = body(self[index], thread)
+        buffer.initializeElement(at: index, to: res)
+      }
+    }
+  }
+}
