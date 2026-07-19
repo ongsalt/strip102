@@ -95,32 +95,25 @@ class SparseStripRenderer: @unchecked Sendable {
     // index = miss index
     let built: [CachedStrips] = Array(unsafeUninitializedCapacity: misses.count) {
       [coverageArenas, misses] out, wrote in
-      let next = Atomic(0)
       wrote = misses.count
       nonisolated(unsafe) let buffer = out
       nonisolated(unsafe) let scratchBuffers = self.scratchBuffers
-      DispatchQueue.concurrentPerform(iterations: coreCount) { threadIndex in
-        // per thread
-        let arena = coverageArenas[threadIndex]
-        let scratchBuffer = scratchBuffers[threadIndex]
-        
-        // pull tasks
-        while true {
-          let task = next.add(1, ordering: .relaxed).oldValue
-          guard task < misses.count else { break }
-          let i = misses[task]
 
-          let lines = ops[unchecked: i].path.breakIntoLines(
-            transform: ops[unchecked: i].transform, tolerance: 0.25)
-          let tiles = generateTiles(lines: lines)
-          let strips = generateStrips(
-            tiles: tiles.span,
-            arena: arena,
-            scratchBuffer: scratchBuffer
-          )
+      parallelFor(count: misses.count, threads: coreCount) { task, thread in
+        let arena = coverageArenas[thread]
+        let scratchBuffer = scratchBuffers[thread]
+        let i = misses[task]
 
-          buffer.initializeElement(at: task, to: CachedStrips(strips: strips, arena: arena))
-        }
+        let lines = ops[unchecked: i].path.breakIntoLines(
+          transform: ops[unchecked: i].transform, tolerance: 0.25)
+        let tiles = generateTiles(lines: lines)
+        let strips = generateStrips(
+          tiles: tiles.span,
+          arena: arena,
+          scratchBuffer: scratchBuffer
+        )
+
+        buffer.initializeElement(at: task, to: CachedStrips(strips: strips, arena: arena))
       }
     }
 
@@ -144,30 +137,22 @@ class SparseStripRenderer: @unchecked Sendable {
     let wideTileCommands = generateWideTileCommands(
       width: width, height: height, strips: strips, ops: ops, tileSize: TILE_SIZE)
 
-    let next = Atomic(0)
     let allCommands = wideTileCommands.commands.span
     let offsets = wideTileCommands.offsets
     pixels.withUnsafeMutableBufferPointer { buffer in
       nonisolated(unsafe) let buffer = buffer
 
       // Might generate a colmun major scratch buffer (rx4,gx4,bx4,ax4) per thread
+      // each thread should keep a 256x4 column major blend scratch?
+      parallelFor(count: wideTileCommands.tileCount, threads: coreCount) { i, _ in
+        let x = i % wideTileXCount
+        let y = i / wideTileXCount
 
-      DispatchQueue.concurrentPerform(iterations: coreCount) { _ in
-        // pull tasks
-        // each thread should keep a 256x4 column major blend scratch?
-        while true {
-          let i = next.add(1, ordering: .relaxed).oldValue
-          guard i < wideTileCommands.tileCount else { break }
-
-          let x = i % wideTileXCount
-          let y = i / wideTileXCount
-
-          drawWideTile(
-            x: x, y: y, ops: allCommands.extracting(offsets[i]..<offsets[i + 1]),
-            pixels: buffer.baseAddress!,
-            width: width, height: height
-          )
-        }
+        drawWideTile(
+          x: x, y: y, ops: allCommands.extracting(offsets[i]..<offsets[i + 1]),
+          pixels: buffer.baseAddress!,
+          width: width, height: height
+        )
       }
     }
   }

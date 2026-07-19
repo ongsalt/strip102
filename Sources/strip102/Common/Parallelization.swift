@@ -59,23 +59,18 @@ func getRealCoreCount() -> Int {
   #endif
 }
 
-func dispatch<T>(count: Int, task: (Int) -> T) -> [T] {
-  nonisolated(unsafe) let task = task
+/// Distributes `count` tasks over `threads` workers, each worker pulling the next task off a
+/// shared atomic counter, so uneven task costs balance themselves. `thread` is stable per
+/// worker — use it to index per-thread resources (arenas, scratch buffers)
+func parallelFor(count: Int, threads: Int, _ body: (_ task: Int, _ thread: Int) -> Void) {
+  nonisolated(unsafe) let body = body
+  let next = Atomic(0)
 
-  return Array(capacity: count) { out in
-    let coreCount = getRealCoreCount()
-    let next = Atomic(0)
-    nonisolated(unsafe) var _out = out
-
-    DispatchQueue.concurrentPerform(iterations: coreCount) { index in
-      while true {
-        let i = next.add(1, ordering: .relaxed).oldValue
-        guard i < count else { break }
-        _out[i] = task(i)
-      }
+  DispatchQueue.concurrentPerform(iterations: threads) { thread in
+    while true {
+      let task = next.add(1, ordering: .relaxed).oldValue
+      guard task < count else { break }
+      body(task, thread)
     }
-    
-    out = _out
   }
-
 }
