@@ -120,7 +120,7 @@ public struct Canvas: ~Copyable {
         fillScanline(path: op.path, color: op.color, pixels: &span, width: width, height: height)
       }
     } else {
-      sparseStripRenderer.push(ops: ops, pixels: &span, width: width, height: height)
+      sparseStripRenderer.push(ops: ops.span, pixels: &span, width: width, height: height)
     }
 
     ops.removeAll(keepingCapacity: true)

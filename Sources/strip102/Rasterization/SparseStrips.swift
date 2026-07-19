@@ -60,14 +60,12 @@ class SparseStripRenderer: @unchecked Sendable {
   var stripsCache: [StripCacheKey: CachedStrips] = [:]
 
   func push(
-    ops: borrowing [DrawOp],
-
+    ops: Span<DrawOp>,
     // the renderer should also own pixels storage tho
     pixels: inout MutableSpan<Pixel>,
     width: Int,
     height: Int
   ) {
-    let ops = ops.span
 
     // serial prepass: purge dirty paths and resolve cache hits. All cache mutation and all
     // arena frees happen here on the render thread — the parallel phase only allocates

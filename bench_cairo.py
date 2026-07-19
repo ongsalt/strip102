@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Benchmark rendering an SVG through cairo (via librsvg), matching the
-parse-once/rasterize-many pattern used by the Swift and Rust benchmarks."""
+parse-once, one-surface, clear-and-render-per-frame pattern used by the
+Swift and Rust benchmarks."""
 
 import sys
 import time
@@ -28,13 +29,19 @@ def bench(filename: str, iterations: int = DEFAULT_ITERATIONS, scale: float = 1.
     viewport.width = width
     viewport.height = height
 
+    # surface and context live across frames, matching the Swift bench which reuses one
+    # canvas; each frame is clear + render, like a real frame loop
+    surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, width, height)
+    ctx = cairo.Context(surface)
+    ctx.scale(scale, scale)
+
     durations = []
     for _ in range(iterations):
         start = time.perf_counter()
 
-        surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, width, height)
-        ctx = cairo.Context(surface)
-        ctx.scale(scale, scale)
+        ctx.set_operator(cairo.OPERATOR_CLEAR)
+        ctx.paint()
+        ctx.set_operator(cairo.OPERATOR_OVER)
         handle.render_document(ctx, viewport)
 
         durations.append(time.perf_counter() - start)
