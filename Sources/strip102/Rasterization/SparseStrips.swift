@@ -104,9 +104,10 @@ class SparseStripRenderer: @unchecked Sendable {
 
         let lines = ops[unchecked: i].path.breakIntoLines(
           transform: ops[unchecked: i].transform, tolerance: 0.25)
-        let tiles = generateTiles(lines: lines)
+        let tileSet = generateTiles(lines: lines, width: width, height: height)
         let strips = generateStrips(
-          tiles: tiles.span,
+          tiles: tileSet.tiles.span,
+          rowBackgrounds: tileSet.rowBackgrounds,
           arena: arena,
           scratchBuffer: scratchBuffer
         )
@@ -167,13 +168,30 @@ struct Tile {
   }
 }
 
-func generateTiles(lines: consuming [Line]) -> [Tile] {
+struct TileSet {
+  var tiles: [Tile]
+  /// winding each visible tile row starts with, accumulated from the row-top crossings
+  /// that happen left of the viewport, keyed by y (tile unit)
+  var rowBackgrounds: [Int]
+}
+
+/// floor division, so negative coordinates bin into negative tiles instead of
+/// truncating into tile 0
+@inline(__always)
+private func tileIndex(_ v: Float) -> Int {
+  Int((v / Float(TILE_SIZE)).rounded(.down))
+}
+
+func generateTiles(lines: consuming [Line], width: Int, height: Int) -> TileSet {
   var tiles: [Tile] = []
+  let xTileCount = (width + TILE_SIZE - 1) / TILE_SIZE
+  let yTileCount = (height + TILE_SIZE - 1) / TILE_SIZE
+  var rowBackgrounds = [Int](repeating: 0, count: yTileCount)
 
   for line in lines {
     // print(line)
-    let yStart = Int(line.start.y) / TILE_SIZE
-    let yEnd = Int(line.end.y) / TILE_SIZE
+    let yStart = tileIndex(line.start.y)
+    let yEnd = tileIndex(line.end.y)
 
     // first bin line by y
     // for each segment: bin by x
@@ -181,13 +199,16 @@ func generateTiles(lines: consuming [Line]) -> [Tile] {
     let dir = if dy > 0 { 1 } else { -1 }
     // print("new dy=\(dy) yStart=\(yStart) yEnd=\(yEnd)")
     for y in stride(from: yStart, through: yEnd, by: dir) {
+      // row outside of viewport: skip
+      guard y >= 0 && y < yTileCount else { continue }
+
       let yBinnedLine = line.crop(y: Float(TILE_SIZE * y)...(Float(TILE_SIZE * (y + 1))))
 
       // print(line, yBinnedLine)
       // print(" - \(yBinnedLine)")
 
-      let xStart = Int(yBinnedLine.start.x) / TILE_SIZE
-      let xEnd = Int(yBinnedLine.end.x) / TILE_SIZE
+      let xStart = tileIndex(yBinnedLine.start.x)
+      let xEnd = tileIndex(yBinnedLine.end.x)
       let dx = yBinnedLine.end.x - yBinnedLine.start.x
 
       let dir = if dx > 0 { 1 } else { -1 }
@@ -195,12 +216,24 @@ func generateTiles(lines: consuming [Line]) -> [Tile] {
         let xBinnedLine = yBinnedLine.crop(x: Float(TILE_SIZE * x)...(Float(TILE_SIZE * (x + 1))))
         if xBinnedLine.isPoint { continue }
 
+        let hasWinding =
+          abs(min(xBinnedLine.start.y, xBinnedLine.end.y) - Float(y * TILE_SIZE)) < 0.00001
+
+        if x < 0 {
+          // offscreen left still decides the winding the visible part of the row starts with
+          if hasWinding {
+            rowBackgrounds[y] += xBinnedLine.direction > 0 ? 1 : -1
+          }
+          continue
+        }
+        // offscreen right: skip
+        if x >= xTileCount { continue }
+
         let tile = Tile(
           x: UInt16(x),
           y: UInt16(y),
           line: xBinnedLine,
-          hasWinding: abs(min(xBinnedLine.start.y, xBinnedLine.end.y) - Float(y * TILE_SIZE))
-            < 0.00001
+          hasWinding: hasWinding
         )
         tiles.append(tile)
         // print(" > \(tile)")
@@ -215,7 +248,7 @@ func generateTiles(lines: consuming [Line]) -> [Tile] {
     return a.y < b.y
   }
 
-  return tiles
+  return TileSet(tiles: tiles, rowBackgrounds: rowBackgrounds)
 }
 struct Strip {
   var x: UInt16
@@ -311,18 +344,19 @@ struct Coverage: @unchecked Sendable {
 
 func generateStrips(
   tiles: borrowing Span<Tile>,
+  rowBackgrounds: [Int],
   arena: CoverageArena,
   scratchBuffer: UnsafeMutableBufferPointer<Float>
 ) -> [Strip] {
   var strips: [Strip] = []
   var winding = 0
-  var lastY = 0
+  // sentinel, so the first tile's row picks up its background even when it is row 0
+  var lastY = -1
 
   var i = 0
   while i < tiles.count {
     if lastY != tiles[unchecked: i].y {
-      winding = 0
-      // print("reset winding \(winding) \(tiles[i])")
+      winding = rowBackgrounds[Int(tiles[unchecked: i].y)]
     }
     lastY = Int(tiles[unchecked: i].y)
 
