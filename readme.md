@@ -20,9 +20,7 @@ bench tiger.svg x1000: total=12.76478413s, avg=12.764784ms, min=12.210389ms, max
 bench tiger.svg x1000: total=13.12967282s, avg=13.129673ms, min=12.002300ms, max=19.617795ms
 ```
 
-vello is like 4ms iirc
-
-BUT this comparison is unfair cuz we dont even have a proper stroking yet. Advanced brush/paint is also non existent.
+BUT this comparison is unfair cuz we dont even have a proper stroking yet. Advanced brush/paint is also non existent. And cairo also re-tessellates path every frame.
 
 ## Spec
 

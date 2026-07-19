@@ -125,6 +125,7 @@ class SparseStripRenderer: @unchecked Sendable {
     }
 
     // a purge next frame must not free regions this frame still points into
+    // swift ends an object's lifetime at its last use, not end of the scope
     defer { withExtendedLifetime(entries) {} }
     let strips = entries.map { $0!.strips }
 
@@ -154,68 +155,6 @@ class SparseStripRenderer: @unchecked Sendable {
       }
     }
   }
-
-
-}
-func drawWideTile(
-  x: Int,
-  y: Int,
-  ops: Span<WideTileDrawOp>,
-  pixels: UnsafeMutablePointer<Pixel>,  // row major tho
-  width: Int,
-  height: Int
-) {
-  let tileStartX = x * WIDE_TILE_WIDTH
-  let tileStartY = y * TILE_SIZE
-  let rowCount = min(TILE_SIZE, height - tileStartY)
-  guard rowCount > 0, ops.count > 0 else { return }
-  // print("Drawing wide tile at (\(tileStartX) \(tileStartY))")
-
-  for i in ops.indices {
-    switch ops[unchecked: i] {
-    case .solid(let x, let w, let color):
-      let startX = tileStartX + Int(x) * TILE_SIZE
-      let endX = min(startX + Int(w) * TILE_SIZE, width)
-      guard startX < endX else { continue }
-
-      if color.alpha == 1.0 {
-        let pixel: Pixel = [
-          UInt8(color.red * 255), UInt8(color.green * 255), UInt8(color.blue * 255), 255,
-        ]
-        for row in 0..<rowCount {
-          let rowStart = (tileStartY + row) * width
-          UnsafeMutableBufferPointer(start: pixels + rowStart + startX, count: endX - startX)
-            .update(repeating: pixel)
-        }
-      } else {
-        let source = Color8(color)
-        for row in 0..<rowCount {
-          let rowStart = (tileStartY + row) * width
-          for px in startX..<endX {
-            blend(source, &pixels[rowStart + px], 1.0)
-          }
-        }
-      }
-
-    case .aa(let x, let w, let color, let coverage, let offset):
-      let startX = tileStartX + Int(x) * TILE_SIZE  // actual pixel
-      let endX = min(startX + Int(w) * TILE_SIZE, width)
-      // print(" - Executing aa at x=\(startX)...\(endX)")
-      guard startX < endX else { continue }
-
-      let source = Color8(color)
-      for column in 0..<(endX - startX) {
-        // column major, 4 rows per pixel column
-        let columnStart = (Int(offset) * TILE_SIZE + column) * TILE_SIZE
-        // print(coverage, columnStart)
-        for row in 0..<rowCount {
-          // TODO: fill rule, this is nonzero
-          let opacity = min(abs(coverage[columnStart + row]), 1.0)
-          blend(source, &pixels[(tileStartY + row) * width + startX + column], opacity)
-        }
-      }
-    }
-  }
 }
 struct Tile {
   let x: UInt16
@@ -227,6 +166,7 @@ struct Tile {
     other.x == x && other.y == y
   }
 }
+
 func generateTiles(lines: consuming [Line]) -> [Tile] {
   var tiles: [Tile] = []
 
@@ -283,6 +223,7 @@ struct Strip {
   var coverageBuffer: UnsafeBufferPointer<Float>
   var shouldFillLeft: Bool
 }
+
 /// Long-lived coverage storage behaving like a real allocator: regions are carved from
 /// slabs via a first-fit free list and handed back with `free`. When nothing fits, a new
 /// (bigger) slab is chained instead of reallocating, so handed-out regions never move.
