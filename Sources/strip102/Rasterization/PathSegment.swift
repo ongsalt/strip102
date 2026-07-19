@@ -1,0 +1,423 @@
+import Foundation
+
+// MARK: - Curves
+
+public struct QuadraticBezierCurve: Sendable, Equatable {
+  public var start: Point
+  public var control: Point
+  public var end: Point
+
+  public init(start: Point, control: Point, end: Point) {
+    self.start = start
+    self.control = control
+    self.end = end
+  }
+
+  public func sample(_ t: Float) -> Point {
+    let a = start.lerp(to: control, t)
+    let b = control.lerp(to: end, t)
+    return a.lerp(to: b, t)
+  }
+
+  /// de Casteljau split into two curves meeting at `sample(t)`
+  public func split(at t: Float) -> (QuadraticBezierCurve, QuadraticBezierCurve) {
+    let a = start.lerp(to: control, t)
+    let b = control.lerp(to: end, t)
+    let mid = a.lerp(to: b, t)
+
+    return (
+      QuadraticBezierCurve(start: start, control: a, end: mid),
+      QuadraticBezierCurve(start: mid, control: b, end: end)
+    )
+  }
+
+  /// distance of the control point to the chord start..end is within `tolerance`
+  public func isFlat(tolerance: Float) -> Bool {
+    let chord = end - start
+    let arm = control - start
+
+    let cross = chord.cross(arm)
+    return tolerance * tolerance * chord.lengthSquared >= cross * cross
+  }
+
+  /// polyline of `segments + 1` points sampled at even `t`
+  public func flattenUniform(segments: Int) -> [Point] {
+    let segments = max(segments, 1)
+    return (0...segments).map { sample(Float($0) / Float(segments)) }
+  }
+
+  /// polyline that stays within `tolerance` of the curve
+  public func flattenRecursiveSubdivision(tolerance: Float) -> [Point] {
+    var points = [start]
+    writeFlattened(tolerance: tolerance, into: &points)
+    return points
+  }
+
+  /// appends every point after `start`, so the caller can chain segments without duplicating joints
+  public func writeFlattened(tolerance: Float, into output: inout [Point]) {
+    func walk(_ curve: QuadraticBezierCurve, _ depth: Int) {
+      if curve.isFlat(tolerance: tolerance) || depth >= maxSubdivisionDepth {
+        output.append(curve.end)
+        return
+      }
+
+      let (left, right) = curve.split(at: 0.5)
+      walk(left, depth + 1)
+      walk(right, depth + 1)
+    }
+
+    walk(self, 0)
+  }
+}
+
+public struct CubicBezierCurve: Sendable, Equatable {
+  public var start: Point
+  public var control1: Point
+  public var control2: Point
+  public var end: Point
+
+  public init(start: Point, control1: Point, control2: Point, end: Point) {
+    self.start = start
+    self.control1 = control1
+    self.control2 = control2
+    self.end = end
+  }
+
+  public func sample(_ t: Float) -> Point {
+    let a = start.lerp(to: control1, t)
+    let b = control1.lerp(to: control2, t)
+    let c = control2.lerp(to: end, t)
+
+    let d = a.lerp(to: b, t)
+    let e = b.lerp(to: c, t)
+    return d.lerp(to: e, t)
+  }
+
+  public func split(at t: Float) -> (CubicBezierCurve, CubicBezierCurve) {
+    let ab = start.lerp(to: control1, t)
+    let bc = control1.lerp(to: control2, t)
+    let cd = control2.lerp(to: end, t)
+    let abc = ab.lerp(to: bc, t)
+    let bcd = bc.lerp(to: cd, t)
+    let mid = abc.lerp(to: bcd, t)  // = B(t), on the curve
+
+    return (
+      CubicBezierCurve(start: start, control1: ab, control2: abc, end: mid),
+      CubicBezierCurve(start: mid, control1: bcd, control2: cd, end: end)
+    )
+  }
+
+  public func isFlat(tolerance: Float) -> Bool {
+    let chord = end - start
+
+    let arm1 = abs((control1 - start).cross(chord))
+    let arm2 = abs((control2 - start).cross(chord))
+
+    let cross = max(arm1, arm2)
+    return tolerance * tolerance * chord.lengthSquared >= cross * cross
+  }
+
+  /// polyline that stays within `tolerance` of the curve
+  public func flattenRecursiveSubdivision(tolerance: Float) -> [Point] {
+    var points = [start]
+    writeFlattened(tolerance: tolerance, into: &points)
+    return points
+  }
+
+  /// appends every point after `start`, so the caller can chain segments without duplicating joints
+  public func writeFlattened(tolerance: Float, into output: inout [Point]) {
+    func walk(_ curve: CubicBezierCurve, _ depth: Int) {
+      if curve.isFlat(tolerance: tolerance) || depth >= maxSubdivisionDepth {
+        output.append(curve.end)
+        return
+      }
+
+      let (left, right) = curve.split(at: 0.5)
+      walk(left, depth + 1)
+      walk(right, depth + 1)
+    }
+
+    walk(self, 0)
+  }
+}
+
+/// An elliptical arc stored as a center and two axis vectors instead of a radius, so it stays
+/// closed under affine transforms: `P(θ) = center + cos(θ) * xAxis + sin(θ) * yAxis`.
+/// The sweep direction follows the sign of `endAngle - startAngle`.
+public struct Arc: Sendable, Equatable {
+  public var center: Point
+  /// vector from `center` to the point at angle 0
+  public var xAxis: Point
+  /// vector from `center` to the point at angle π/2
+  public var yAxis: Point
+  public var startAngle: Float
+  public var endAngle: Float
+
+  public init(center: Point, xAxis: Point, yAxis: Point, startAngle: Float, endAngle: Float) {
+    self.center = center
+    self.xAxis = xAxis
+    self.yAxis = yAxis
+    self.startAngle = startAngle
+    self.endAngle = endAngle
+  }
+
+  /// circular arc
+  public init(center: Point, radius: Float, startAngle: Angle, endAngle: Angle) {
+    self.init(
+      center: center,
+      xAxis: Point(radius, 0),
+      yAxis: Point(0, radius),
+      startAngle: startAngle.radians,
+      endAngle: endAngle.radians)
+  }
+
+  public var start: Point { sample(0) }
+  public var end: Point { sample(1) }
+
+  public func sample(_ t: Float) -> Point {
+    let angle = startAngle + (endAngle - startAngle) * t
+    return center + cos(angle) * xAxis + sin(angle) * yAxis
+  }
+
+  public func reversed() -> Arc {
+    Arc(center: center, xAxis: xAxis, yAxis: yAxis, startAngle: endAngle, endAngle: startAngle)
+  }
+
+  public func transformed(by transform: Affine) -> Arc {
+    Arc(
+      center: transform.apply(center),
+      xAxis: transform.applyVector(xAxis),
+      yAxis: transform.applyVector(yAxis),
+      startAngle: startAngle,
+      endAngle: endAngle)
+  }
+
+  /// polyline that stays within `tolerance` of the arc
+  public func flattenUniform(tolerance: Float) -> [Point] {
+    var points = [start]
+    writeFlattened(tolerance: tolerance, into: &points)
+    return points
+  }
+
+  /// appends every point after `start`, so the caller can chain segments without duplicating joints
+  public func writeFlattened(tolerance: Float, into output: inout [Point]) {
+    // every point sits within sqrt(|xAxis|² + |yAxis|²) of the center, even when the axes
+    // are sheared (Cauchy-Schwarz on cos·xAxis + sin·yAxis)
+    let radius = (xAxis.lengthSquared + yAxis.lengthSquared).squareRoot()
+    let sweep = abs(endAngle - startAngle)
+
+    var steps = 1
+    if radius > tolerance {
+      // a chord spanning dθ sags r * (1 - cos(dθ / 2)) below the arc
+      let maxStep = 2 * acos(1 - tolerance / radius)
+      steps = max(Int((sweep / maxStep).rounded(.up)), 1)
+    }
+
+    for i in 1...steps {
+      output.append(sample(Float(i) / Float(steps)))
+    }
+  }
+}
+
+// MARK: - Line
+
+public struct Line: Sendable, Equatable {
+  public var start: Point
+  public var end: Point
+
+  public init(_ start: Point, _ end: Point) {
+    self.start = start
+    self.end = end
+  }
+
+  public func sample(_ t: Float) -> Point {
+    start.lerp(to: end, t)
+  }
+
+  public func split(atY y: Float) -> (Line, Line)? {
+    let (a, b) = (start, end)
+    let dy = b.y - a.y
+    if dy == 0 {
+      return nil
+    }
+
+    let t = (y - a.y) / dy
+    if t < 0 || t > 1 {
+      return nil
+    }
+
+    let p = Point(a.x + t * (b.x - a.x), y)
+    return (Line(a, p), Line(p, b))
+  }
+
+  /// cell bounds, so its floor
+  public var yBounds: (Int, Int) {
+    (Int(min(start.y, end.y).rounded(.down)), Int(max(start.y, end.y).rounded(.down)))
+  }
+
+  /// cell bounds, so its floor
+  public var xBounds: (Int, Int) {
+    (Int(min(start.x, end.x).rounded(.down)), Int(max(start.x, end.x).rounded(.down)))
+  }
+
+  public var minX: Int {
+    Int(min(start.x, end.x).rounded(.down))
+  }
+
+  /// -1 up, 1 down
+  public var direction: Float {
+    end.y > start.y ? 1 : -1
+  }
+
+  /// portion of the line inside the strip `startY...endY`, or `nil` if disjoint.
+  /// keeps the original start-to-end direction, so winding is preserved.
+  /// `startY` must be less than `endY`
+  public func clipY(from startY: Float, to endY: Float) -> Line? {
+    let (a, b) = (start, end)
+
+    let dy = b.y - a.y
+    if dy == 0 {
+      // horizontal: wholly inside or wholly outside
+      return (startY...endY).contains(a.y) ? self : nil
+    }
+
+    let ta = ((startY - a.y) / dy).clamped(from: 0, to: 1)
+    let tb = ((endY - a.y) / dy).clamped(from: 0, to: 1)
+    let (enter, exit) = ta <= tb ? (ta, tb) : (tb, ta)
+
+    if exit <= enter {
+      // both ends clamped to the same side: no overlap
+      return nil
+    }
+
+    return Line(sample(enter), sample(exit))
+  }
+
+  /// `startX` must be less than `endX`
+  public func clipX(from startX: Float, to endX: Float) -> Line? {
+    let (a, b) = (start, end)
+
+    let dx = b.x - a.x
+    if dx == 0 {
+      // vertical: wholly inside or wholly outside
+      return (startX...endX).contains(a.x) ? self : nil
+    }
+
+    let ta = ((startX - a.x) / dx).clamped(from: 0, to: 1)
+    let tb = ((endX - a.x) / dx).clamped(from: 0, to: 1)
+    let (enter, exit) = ta <= tb ? (ta, tb) : (tb, ta)
+
+    if exit <= enter {
+      // both ends clamped to the same side: no overlap
+      return nil
+    }
+
+    return Line(sample(enter), sample(exit))
+  }
+
+  public var bounds: Rect {
+    Rect(
+      top: min(start.y, end.y),
+      left: min(start.x, end.x),
+      bottom: max(start.y, end.y),
+      right: max(start.x, end.x)
+    )
+  }
+}
+
+/// a cusp keeps failing the flatness test even as the chord shrinks to nothing, so cap the recursion
+private let maxSubdivisionDepth = 20
+
+public let defaultFlattenTolerance: Float = 0.5
+
+// MARK: - Segments
+
+public enum PathSegment: Sendable, Equatable {
+  case line(Line)
+  case quadratic(QuadraticBezierCurve)
+  case cubic(CubicBezierCurve)
+  case arc(Arc)
+
+  public var start: Point {
+    switch self {
+    case .line(let line): line.start
+    case .quadratic(let curve): curve.start
+    case .cubic(let curve): curve.start
+    case .arc(let arc): arc.start
+    }
+  }
+
+  public var end: Point {
+    switch self {
+    case .line(let line): line.end
+    case .quadratic(let curve): curve.end
+    case .cubic(let curve): curve.end
+    case .arc(let arc): arc.end
+    }
+  }
+
+  public func reversed() -> PathSegment {
+    switch self {
+    case .line(let line):
+      .line(Line(line.end, line.start))
+    case .quadratic(let curve):
+      .quadratic(
+        QuadraticBezierCurve(start: curve.end, control: curve.control, end: curve.start))
+    case .cubic(let curve):
+      .cubic(
+        CubicBezierCurve(
+          start: curve.end, control1: curve.control2, control2: curve.control1, end: curve.start))
+    case .arc(let arc):
+      .arc(arc.reversed())
+    }
+  }
+
+  public func transformed(by transform: Affine) -> PathSegment {
+    switch self {
+    case .line(let line):
+      .line(Line(transform.apply(line.start), transform.apply(line.end)))
+    case .quadratic(let curve):
+      .quadratic(
+        QuadraticBezierCurve(
+          start: transform.apply(curve.start),
+          control: transform.apply(curve.control),
+          end: transform.apply(curve.end)))
+    case .cubic(let curve):
+      .cubic(
+        CubicBezierCurve(
+          start: transform.apply(curve.start),
+          control1: transform.apply(curve.control1),
+          control2: transform.apply(curve.control2),
+          end: transform.apply(curve.end)))
+    case .arc(let arc):
+      .arc(arc.transformed(by: transform))
+    }
+  }
+
+  public func writeLines(tolerance: Float, into output: inout [Line]) {
+    switch self {
+    case .line(let line):
+      output.append(line)
+    case .quadratic(let curve):
+      var points = [curve.start]
+      curve.writeFlattened(tolerance: tolerance, into: &points)
+      appendLines(points, into: &output)
+    case .cubic(let curve):
+      var points = [curve.start]
+      curve.writeFlattened(tolerance: tolerance, into: &points)
+      appendLines(points, into: &output)
+    case .arc(let arc):
+      var points = [arc.start]
+      arc.writeFlattened(tolerance: tolerance, into: &points)
+      appendLines(points, into: &output)
+    }
+  }
+
+  private func appendLines(_ points: [Point], into output: inout [Line]) {
+    var current = points[0]
+    for point in points.dropFirst() {
+      output.append(Line(current, point))
+      current = point
+    }
+  }
+}

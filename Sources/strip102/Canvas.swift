@@ -21,6 +21,10 @@ public struct Canvas: ~Copyable {
   /// Which rasterizer `flush` runs. Set once here instead of at every call site.
   public var fillAlgorithm: FillAlgorithm
 
+  /// Lives as long as the canvas so the strip cache carries over between flushes;
+  /// lazy so a scanline-only canvas never pays for the coverage arenas.
+  private lazy var sparseStripRenderer = SparseStripRenderer()
+
   /// The current transformation matrix, applied to every path recorded from now on.
   public var transform: Affine
 
@@ -116,7 +120,7 @@ public struct Canvas: ~Copyable {
         fillScanline(path: op.path, color: op.color, pixels: &span, width: width, height: height)
       }
     } else {
-      drawSparseSprips(ops: ops, pixels: &span, width: width, height: height)
+      sparseStripRenderer.drawSparseSprips(ops: ops, pixels: &span, width: width, height: height)
     }
 
     ops.removeAll(keepingCapacity: true)

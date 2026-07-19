@@ -1,103 +1,164 @@
 import Dispatch
+
 import Foundation
+
 import Synchronization
 
 let TILE_SIZE: Int = 4
 let WIDE_TILE_WIDTH: Int = 256
-
-func drawSparseSprips(
-  ops: borrowing [DrawOp],
-  pixels: inout MutableSpan<Pixel>,
-  width: Int,
-  height: Int
-) {
-  // bin screen into 256x4 `wide` tiles
-
-  let ops = ops.span
-
+class SparseStripRenderer: @unchecked Sendable {
   let coreCount = getRealCoreCount()
 
-  // this shit can be cache tho
-  let coverageBuffers = (0..<coreCount).map { _ in
-    CoverageBuffer(tileSize: TILE_SIZE, tileCount: 1024 * 128)
+  /// one arena per worker thread: allocation is single-threaded by construction, and all
+  /// frees happen on the render thread while workers are idle, so no locking anywhere
+  let coverageArenas: [CoverageArena]
+
+  init() {
+    coverageArenas = (0..<coreCount).map { _ in
+      CoverageArena(tileCount: 1024 * 128)
+    }
   }
 
-  // index = path index
-  // Array(unsafeUninitializedCapacity: Int, initializingWith: (_ buffer: inout UnsafeMutableBufferPointer<Element>, _ initializedCount: inout Int) throws(Error) -> Void)
-  let strips: [[Strip]] = Array(unsafeUninitializedCapacity: ops.count) { out, wrote in
+  struct StripCacheKey: Hashable {
+    let pathId: Path.ID
+    let affine: Affine
+  }
+
+  /// strips generated straight into one worker's arena; the regions go back to it on eviction.
+  /// Only ever released on the render thread (cache purge or end of frame), never by a worker
+  final class CachedStrips: @unchecked Sendable {
+    let strips: [Strip]
+    private let arena: CoverageArena
+
+    init(strips: [Strip], arena: CoverageArena) {
+      self.strips = strips
+      self.arena = arena
+    }
+
+    deinit {
+      for strip in strips {
+        arena.free(strip.coverageBuffer)
+      }
+    }
+  }
+
+  // TODO: entries for dead paths leak until their address is reused; sweep periodically
+  // render-thread only; workers never touch it
+  var stripsCache: [StripCacheKey: CachedStrips] = [:]
+
+  func drawSparseSprips(
+    ops: borrowing [DrawOp],
+    pixels: inout MutableSpan<Pixel>,
+    width: Int,
+    height: Int
+  ) {
+    // bin screen into 256x4 `wide` tiles
+    let ops = ops.span
+
+    // serial prepass: purge dirty paths and resolve cache hits. All cache mutation and all
+    // arena frees happen here on the render thread — the parallel phase only allocates
+    var entries: [CachedStrips?] = []
+    entries.reserveCapacity(ops.count)
+    var misses: [Int] = []
+    for i in 0..<ops.count {
+      let path = ops[unchecked: i].path
+      if path.dirty {
+        // old shape under this id is gone; this also purges entries a freed path
+        // left behind when its storage address gets reused
+        let id = path.id
+        stripsCache = stripsCache.filter { $0.key.pathId != id }
+        path.dirty = false
+      }
+
+      let cached = stripsCache[
+        StripCacheKey(pathId: path.id, affine: ops[unchecked: i].transform)]
+      if cached == nil { misses.append(i) }
+      entries.append(cached)
+    }
+
+    // parallel: rasterize the misses, each worker allocating from its own arena
+    // index = miss index
+    // Array(unsafeUninitializedCapacity: Int, initializingWith: (_ buffer: inout UnsafeMutableBufferPointer<Element>, _ initializedCount: inout Int) throws(Error) -> Void)
+    let built: [CachedStrips] = Array(unsafeUninitializedCapacity: misses.count) {
+      [coverageArenas, misses] out, wrote in
+      let next = Atomic(0)
+      wrote = misses.count
+      nonisolated(unsafe) let buffer = out
+      DispatchQueue.concurrentPerform(iterations: coreCount) { threadIndex in
+        // per thread
+        let scratchBuffer: UnsafeMutableBufferPointer<Float> = .allocate(
+          capacity: TILE_SIZE * TILE_SIZE * 1024)
+        defer { scratchBuffer.deallocate() }
+        let arena = coverageArenas[threadIndex]
+
+        // pull tasks
+        while true {
+          let task = next.add(1, ordering: .relaxed).oldValue
+          guard task < misses.count else { break }
+          let i = misses[task]
+
+          let lines = ops[unchecked: i].path.breakIntoLines(
+            transform: ops[unchecked: i].transform, tolerance: 0.25)
+          let tiles = generateTiles(lines: lines)
+          let strips = generateStrips(
+            tiles: tiles.span,
+            arena: arena,
+            scratchBuffer: scratchBuffer
+          )
+
+          buffer.initializeElement(at: task, to: CachedStrips(strips: strips, arena: arena))
+        }
+      }
+    }
+
+    // serial publish. A key hit twice in one frame just replaces; the orphaned entry stays
+    // alive through `entries` until the frame ends, then returns its regions
+    for (task, i) in misses.enumerated() {
+      let path = ops[unchecked: i].path
+      stripsCache[StripCacheKey(pathId: path.id, affine: ops[unchecked: i].transform)] =
+        built[task]
+      entries[i] = built[task]
+    }
+
+    // a purge next frame must not free regions this frame still points into
+    defer { withExtendedLifetime(entries) {} }
+    let strips = entries.map { $0!.strips }
+
+    // generate per WideTile (screen space) draw commands ??
+    let wideTileXCount = Int((Float(width) / 256).rounded(.up))
+
+    // wide tile is in row major for conveniece
+    let wideTileCommands = generateWideTileCommands(
+      width: width, height: height, strips: strips, ops: ops, tileSize: TILE_SIZE)
+
     let next = Atomic(0)
-    wrote = ops.count
-    nonisolated(unsafe) let buffer = out
-    DispatchQueue.concurrentPerform(iterations: coreCount) { threadIndex in
-      // per thread
-      let scratchBuffer: UnsafeMutableBufferPointer<Float> = .allocate(
-        capacity: TILE_SIZE * TILE_SIZE * 1024)
-      let coverageBuffer = coverageBuffers[threadIndex]
+    let allCommands = wideTileCommands.commands.span
+    let offsets = wideTileCommands.offsets
+    pixels.withUnsafeMutableBufferPointer { buffer in
+      nonisolated(unsafe) let buffer = buffer
 
-      // pull tasks
-      while true {
-        let i = next.add(1, ordering: .relaxed).oldValue
-        guard i < ops.count else { break }
+      // Might generate a colmun major scratch buffer (rx4,gx4,bx4,ax4) per thread
 
-        let lines = ops[unchecked: i].path.breakIntoLines(
-          transform: ops[unchecked: i].transform, tolerance: 0.25)
-        let tiles = generateTiles(lines: lines)
+      DispatchQueue.concurrentPerform(iterations: coreCount) { _ in
+        // pull tasks
+        // each thread should keep a 256x4 column major blend scratch?
+        while true {
+          let i = next.add(1, ordering: .relaxed).oldValue
+          guard i < wideTileCommands.tileCount else { break }
 
-        // print("tiles")
-        // for t in tiles {
-        //   print(" - \(t)")
-        // }
+          let x = i % wideTileXCount
+          let y = i / wideTileXCount
 
-        // also generate coverage
-        let strips = generateStrips(
-          tiles: tiles.span,
-          coverageBuffer: coverageBuffer,
-          scratchBuffer: scratchBuffer
-        )
-
-        // print("strips", strips)
-
-        buffer.initializeElement(at: i, to: strips)
+          drawWideTile(
+            x: x, y: y, ops: allCommands.extracting(offsets[i]..<offsets[i + 1]),
+            pixels: buffer.baseAddress!,
+            width: width, height: height
+          )
+        }
       }
     }
-  }
-
-  // generate per WideTile (screen space) draw commands ??
-  let wideTileXCount = Int((Float(width) / 256).rounded(.up))
-
-  // wide tile is in row major for conveniece
-  let wideTileCommands = generateWideTileCommands(width: width, height: height, strips: strips, ops: ops, tileSize: TILE_SIZE)  
-
-  // executing thos
-  let next = Atomic(0)
-  let allCommands = wideTileCommands.commands.span
-  let offsets = wideTileCommands.offsets
-  pixels.withUnsafeMutableBufferPointer { buffer in
-    nonisolated(unsafe) let buffer = buffer
-    DispatchQueue.concurrentPerform(iterations: coreCount) { _ in
-      // pull tasks
-      // each thread should keep a 256x4 column major blend scratch?
-      while true {
-        let i = next.add(1, ordering: .relaxed).oldValue
-        guard i < wideTileCommands.tileCount else { break }
-
-        let x = i % wideTileXCount
-        let y = i / wideTileXCount
-
-        drawWideTile(
-          x: x, y: y, ops: allCommands.extracting(offsets[i]..<offsets[i + 1]),
-          pixels: buffer.baseAddress!,
-          width: width, height: height
-        )
-      }
-    }
-  }
-
-  for buffer in coverageBuffers {
-    buffer.release()
   }
 }
-
 func drawWideTile(
   x: Int,
   y: Int,
@@ -158,7 +219,6 @@ func drawWideTile(
     }
   }
 }
-
 struct Tile {
   let x: UInt16
   let y: UInt16
@@ -169,10 +229,6 @@ struct Tile {
     other.x == x && other.y == y
   }
 }
-
-// [0, 4) [4, 8) [8, 12) [12, 15)
-
-// TODO: Borrowing iterator
 func generateTiles(lines: consuming [Line]) -> [Tile] {
   var tiles: [Tile] = []
 
@@ -227,7 +283,6 @@ func generateTiles(lines: consuming [Line]) -> [Tile] {
 
   return tiles
 }
-
 struct Strip {
   var x: UInt16
   var y: UInt16
@@ -250,58 +305,93 @@ struct Strip {
   //   }
   // }
 }
+/// Long-lived coverage storage behaving like a real allocator: regions are carved from
+/// slabs via a first-fit free list and handed back with `free`. When nothing fits, a new
+/// (bigger) slab is chained instead of reallocating, so handed-out regions never move.
+/// Deliberately not thread-safe — each worker owns one arena for allocation, and frees
+/// only happen on the render thread while the workers are idle.
+final class CoverageArena: @unchecked Sendable {
+  private var slabs: [UnsafeMutableBufferPointer<Float>] = []
+  /// tile capacity of the next slab; doubles on every grow to amortize
+  private var nextSlabTileCount: Int
+  /// disjoint free regions, sorted by address, adjacent ones coalesced
+  private var freeRegions: [UnsafeMutableBufferPointer<Float>] = []
 
-// TODO: bump allocator, per thread?
-class CoverageBuffer: @unchecked Sendable {
-  // just make 8 of this?
-  let buffer: UnsafeMutableBufferPointer<Float>
-  let tileSize: Int
-  var current: Int = 0
+  init(tileCount: Int = 1024 * 32) {
+    nextSlabTileCount = tileCount
+    grow(minimumCount: 0)
+  }
 
-  init(tileSize: Int, tileCount: Int = 1024 * 32) {
-    self.tileSize = tileSize
-    buffer = .allocate(capacity: tileCount * tileSize * tileSize)
+  deinit {
+    for slab in slabs {
+      slab.deallocate()
+    }
+  }
+
+  private func grow(minimumCount: Int) {
+    while nextSlabTileCount * TILE_SIZE * TILE_SIZE < minimumCount {
+      nextSlabTileCount *= 2
+    }
+
+    let slab = UnsafeMutableBufferPointer<Float>.allocate(
+      capacity: nextSlabTileCount * TILE_SIZE * TILE_SIZE)
+    nextSlabTileCount *= 2
+    slabs.append(slab)
+    free(UnsafeBufferPointer(slab))
   }
 
   // each coverage is column major for simd4
   func allocate(_ width: Int) -> UnsafeMutableBufferPointer<Float> {
-    let count = width * tileSize * tileSize
-    let oldValue = current
-    current += count
-    let newBuffer =
-      UnsafeMutableBufferPointer(start: buffer.baseAddress! + oldValue, count: count)
-    // zero only the slice actually handed out, not the whole (oversized, per-thread) arena
-    // up front — computeCoverage relies on this being zeroed since it does `buffer[x] += ...`
-    newBuffer.initialize(repeating: 0.0)
-    // coverages[] = c
-    return newBuffer
+    let count = width * TILE_SIZE * TILE_SIZE
+
+    // first fit
+    for (i, region) in freeRegions.enumerated() where region.count >= count {
+      if region.count == count {
+        freeRegions.remove(at: i)
+      } else {
+        freeRegions[i] = UnsafeMutableBufferPointer(
+          start: region.baseAddress! + count, count: region.count - count)
+      }
+
+      let newBuffer = UnsafeMutableBufferPointer(start: region.baseAddress!, count: count)
+      // zero on handout — computeCoverage relies on this since it does `buffer[x] += ...`
+      newBuffer.update(repeating: 0.0)
+      return newBuffer
+    }
+
+    // nothing fits: chain another slab and retry
+    grow(minimumCount: count)
+    return allocate(width)
   }
 
-  // func print(index: Int) {
-  //   let c = coverages[index]
-  //   let w = c.buffer.count / tileSize
-  //   // column majot
-  //   for y in 0..<tileSize {
-  //     for x in 0..<w {
-  //       Swift.print("\(c.buffer[x * tileSize + y]) ", terminator: "")
-  //     }
-  //     Swift.print()
-  //   }
-  // }
+  func free(_ region: UnsafeBufferPointer<Float>) {
+    guard region.count > 0, let base = region.baseAddress else { return }
+    var start = UnsafeMutablePointer(mutating: base)
+    var count = region.count
 
-  func release() {
-    buffer.deallocate()
+    let i = freeRegions.firstIndex { $0.baseAddress! > start } ?? freeRegions.count
+    var insertAt = i
+    // coalesce with the predecessor and successor when adjacent
+    if i > 0, freeRegions[i - 1].baseAddress! + freeRegions[i - 1].count == start {
+      start = freeRegions[i - 1].baseAddress!
+      count += freeRegions[i - 1].count
+      freeRegions.remove(at: i - 1)
+      insertAt = i - 1
+    }
+    if insertAt < freeRegions.count, start + count == freeRegions[insertAt].baseAddress! {
+      count += freeRegions[insertAt].count
+      freeRegions.remove(at: insertAt)
+    }
+    freeRegions.insert(UnsafeMutableBufferPointer(start: start, count: count), at: insertAt)
   }
 }
-
 struct Coverage: @unchecked Sendable {
   let index: Int
   let buffer: UnsafeMutableBufferPointer<Float>
 }
-
 func generateStrips(
   tiles: borrowing Span<Tile>,
-  coverageBuffer: CoverageBuffer,
+  arena: CoverageArena,
   scratchBuffer: UnsafeMutableBufferPointer<Float>
 ) -> [Strip] {
   var strips: [Strip] = []
@@ -343,12 +433,12 @@ func generateStrips(
     //   print("> break tile at \(i)  \(tiles[i])")
     // }
 
-    scratchBuffer.extracting(0..<stripWidth * coverageBuffer.tileSize * coverageBuffer.tileSize)
+    scratchBuffer.extracting(0..<stripWidth * TILE_SIZE * TILE_SIZE)
       .update(repeating: 0.0)
     // scratchBuffer.initialize(repeating: 0.0)
 
     // allocate buffer, known size
-    let coverage = coverageBuffer.allocate(stripWidth)
+    let coverage = arena.allocate(stripWidth)
     // print(
     //   "Compute coverage: background=\(w) stripWidth=\(stripWidth), tiles[\(start)...\(i)], x: \(tiles[start].x)...\(tiles[i].x) y: \(tiles[start].y)...\(tiles[i].y)"
     // )
@@ -356,7 +446,7 @@ func generateStrips(
     let range = tiles.extracting(start...i)
     computeCoverage(
       tiles: range,
-      tileSize: coverageBuffer.tileSize,
+      tileSize: TILE_SIZE,
       buffer: coverage,
       scratchBuffer: scratchBuffer,
       background: w,
@@ -373,8 +463,6 @@ func generateStrips(
 
   return strips
 }
-
-// column major
 func computeCoverage(
   tiles: borrowing Span<Tile>,
   // inclusive
@@ -443,12 +531,10 @@ func computeCoverage(
   //   // for
   // }
 }
-
 enum WideTileDrawOp: @unchecked Sendable {
   case solid(x: UInt16, w: UInt16, Color)
   case aa(x: UInt16, w: UInt16, Color, coverageBuffer: UnsafeBufferPointer<Float>, offset: UInt16)
 }
-
 extension Line {
   var isPoint: Bool {
     start == end

@@ -21,7 +21,7 @@ public enum Angle: Sendable, Equatable {
     }
 }
 
-public struct Affine: Sendable, Equatable {
+public struct Affine: Sendable, Equatable, Hashable {
     public var col0: SIMD4<Float>
     public var col1: SIMD4<Float>
     public var col2: SIMD4<Float>
