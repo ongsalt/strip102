@@ -323,6 +323,42 @@ public struct Line: Sendable, Equatable {
       right: max(start.x, end.x)
     )
   }
+
+  var isPoint: Bool {
+    start == end
+  }
+
+  func crop(y range: ClosedRange<Float>) -> Line {
+    let dy = self.end.y - self.start.y
+    if dy == 0 {
+      return self
+    }
+
+    let t1 = ((range.lowerBound - self.start.y) / dy).clamped(from: 0.0, to: 1.0)
+    let t2 = ((range.upperBound - self.start.y) / dy).clamped(from: 0.0, to: 1.0)
+
+    return if start.y > end.y {
+      Line(sample(t2), sample(t1))
+    } else {
+      Line(sample(t1), sample(t2))
+    }
+  }
+
+  func crop(x range: ClosedRange<Float>) -> Line {
+    let dx = self.end.x - self.start.x
+    if dx == 0 {
+      return self
+    }
+
+    let t1 = ((range.lowerBound - self.start.x) / dx).clamped(from: 0.0, to: 1.0)
+    let t2 = ((range.upperBound - self.start.x) / dx).clamped(from: 0.0, to: 1.0)
+
+    return if start.x > end.x {
+      Line(sample(t2), sample(t1))
+    } else {
+      Line(sample(t1), sample(t2))
+    }
+  }
 }
 
 /// a cusp keeps failing the flatness test even as the chord shrinks to nothing, so cap the recursion

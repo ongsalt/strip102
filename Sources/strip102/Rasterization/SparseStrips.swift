@@ -5,7 +5,7 @@ import Synchronization
 let TILE_SIZE: Int = 4
 let WIDE_TILE_WIDTH: Int = 256
 
-class SparseStripRenderer: @unchecked Sendable {
+class SparseStripRenderer {
   let coreCount = getRealCoreCount()
 
   /// one arena per worker thread: allocation is single-threaded by construction, and all
@@ -38,7 +38,7 @@ class SparseStripRenderer: @unchecked Sendable {
 
   /// strips generated straight into one worker's arena; the regions go back to it on eviction.
   /// Only ever released on the render thread (cache purge or end of frame), never by a worker
-  final class CachedStrips: @unchecked Sendable {
+  final class CachedStrips {
     let strips: [Strip]
     private let arena: CoverageArena
 
@@ -163,6 +163,13 @@ struct Tile {
   }
 }
 
+struct Strip {
+  var x: UInt16
+  var y: UInt16
+  var coverageBuffer: UnsafeBufferPointer<Float>
+  var shouldFillLeft: Bool
+}
+
 struct TileSet {
   var tiles: [Tile]
   /// winding each visible tile row starts with, accumulated from the row-top crossings
@@ -242,19 +249,14 @@ func generateTiles(lines: consuming [Line], width: Int, height: Int) -> TileSet 
 
   return TileSet(tiles: tiles, rowBackgrounds: rowBackgrounds)
 }
-struct Strip {
-  var x: UInt16
-  var y: UInt16
-  var coverageBuffer: UnsafeBufferPointer<Float>
-  var shouldFillLeft: Bool
-}
+
 
 /// Long-lived coverage storage behaving like a real allocator: regions are carved from
 /// slabs via a first-fit free list and handed back with `free`. When nothing fits, a new
 /// (bigger) slab is chained instead of reallocating, so handed-out regions never move.
 /// Deliberately not thread-safe — each worker owns one arena for allocation, and frees
 /// only happen on the render thread while the workers are idle.
-final class CoverageArena: @unchecked Sendable {
+final class CoverageArena {
   private var slabs: [UnsafeMutableBufferPointer<Float>] = []
   /// tile capacity of the next slab; doubles on every grow to amortize
   private var nextSlabTileCount: Int
@@ -328,10 +330,6 @@ final class CoverageArena: @unchecked Sendable {
     }
     freeRegions.insert(UnsafeMutableBufferPointer(start: start, count: count), at: insertAt)
   }
-}
-struct Coverage: @unchecked Sendable {
-  let index: Int
-  let buffer: UnsafeMutableBufferPointer<Float>
 }
 
 func generateStrips(
@@ -476,45 +474,4 @@ func computeCoverage(
   //   fill[0] = .one / 3
   //   // for
   // }
-}
-enum WideTileDrawOp: @unchecked Sendable {
-  case solid(x: UInt16, w: UInt16, Color)
-  case aa(x: UInt16, w: UInt16, Color, coverageBuffer: UnsafeBufferPointer<Float>, offset: UInt16)
-}
-extension Line {
-  var isPoint: Bool {
-    start == end
-  }
-  func crop(y range: ClosedRange<Float>) -> Line {
-    let dy = self.end.y - self.start.y
-    if dy == 0 {
-      return self
-    }
-
-    let t1 = ((range.lowerBound - self.start.y) / dy).clamped(from: 0.0, to: 1.0)
-    let t2 = ((range.upperBound - self.start.y) / dy).clamped(from: 0.0, to: 1.0)
-
-    return if start.y > end.y {
-      Line(sample(t2), sample(t1))
-    } else {
-      Line(sample(t1), sample(t2))
-    }
-  }
-
-  func crop(x range: ClosedRange<Float>) -> Line {
-    let dx = self.end.x - self.start.x
-    if dx == 0 {
-      return self
-    }
-
-    let t1 = ((range.lowerBound - self.start.x) / dx).clamped(from: 0.0, to: 1.0)
-    let t2 = ((range.upperBound - self.start.x) / dx).clamped(from: 0.0, to: 1.0)
-
-    return if start.x > end.x {
-      Line(sample(t2), sample(t1))
-    } else {
-      Line(sample(t1), sample(t2))
-    }
-  }
-
 }

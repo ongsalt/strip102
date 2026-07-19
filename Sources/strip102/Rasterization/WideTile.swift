@@ -1,5 +1,11 @@
 import Dispatch
 
+
+enum WideTileDrawOp: @unchecked Sendable {
+  case solid(x: UInt16, w: UInt16, Color)
+  case aa(x: UInt16, w: UInt16, Color, coverageBuffer: UnsafeBufferPointer<Float>, offset: UInt16)
+}
+
 /// nested array, flatten, with offset table
 struct WideTileCommands {
   var commands: [WideTileDrawOp]
