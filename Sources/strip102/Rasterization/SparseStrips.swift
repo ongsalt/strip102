@@ -13,9 +13,22 @@ class SparseStripRenderer: @unchecked Sendable {
   /// frees happen on the render thread while workers are idle, so no locking anywhere
   let coverageArenas: [CoverageArena]
 
+  /// per-worker scratch, allocated once and reused every frame; kept out of the arenas so
+  /// it is never zeroed on handout — generateStrips zeroes the slice it needs per strip
+  let scratchBuffers: [UnsafeMutableBufferPointer<Float>]
+
   init() {
     coverageArenas = (0..<coreCount).map { _ in
       CoverageArena(tileCount: 1024 * 128)
+    }
+    scratchBuffers = (0..<coreCount).map { _ in
+      .allocate(capacity: TILE_SIZE * TILE_SIZE * 1024)
+    }
+  }
+
+  deinit {
+    for buffer in scratchBuffers {
+      buffer.deallocate()
     }
   }
 
@@ -46,13 +59,14 @@ class SparseStripRenderer: @unchecked Sendable {
   // render-thread only; workers never touch it
   var stripsCache: [StripCacheKey: CachedStrips] = [:]
 
-  func drawSparseSprips(
+  func push(
     ops: borrowing [DrawOp],
+
+    // the renderer should also own pixels storage tho
     pixels: inout MutableSpan<Pixel>,
     width: Int,
     height: Int
   ) {
-    // bin screen into 256x4 `wide` tiles
     let ops = ops.span
 
     // serial prepass: purge dirty paths and resolve cache hits. All cache mutation and all
@@ -70,6 +84,7 @@ class SparseStripRenderer: @unchecked Sendable {
         path.dirty = false
       }
 
+      // when tf will path.dirty need this check again
       let cached = stripsCache[
         StripCacheKey(pathId: path.id, affine: ops[unchecked: i].transform)]
       if cached == nil { misses.append(i) }
@@ -78,19 +93,17 @@ class SparseStripRenderer: @unchecked Sendable {
 
     // parallel: rasterize the misses, each worker allocating from its own arena
     // index = miss index
-    // Array(unsafeUninitializedCapacity: Int, initializingWith: (_ buffer: inout UnsafeMutableBufferPointer<Element>, _ initializedCount: inout Int) throws(Error) -> Void)
     let built: [CachedStrips] = Array(unsafeUninitializedCapacity: misses.count) {
       [coverageArenas, misses] out, wrote in
       let next = Atomic(0)
       wrote = misses.count
       nonisolated(unsafe) let buffer = out
+      nonisolated(unsafe) let scratchBuffers = self.scratchBuffers
       DispatchQueue.concurrentPerform(iterations: coreCount) { threadIndex in
         // per thread
-        let scratchBuffer: UnsafeMutableBufferPointer<Float> = .allocate(
-          capacity: TILE_SIZE * TILE_SIZE * 1024)
-        defer { scratchBuffer.deallocate() }
         let arena = coverageArenas[threadIndex]
-
+        let scratchBuffer = scratchBuffers[threadIndex]
+        
         // pull tasks
         while true {
           let task = next.add(1, ordering: .relaxed).oldValue
@@ -158,6 +171,8 @@ class SparseStripRenderer: @unchecked Sendable {
       }
     }
   }
+
+
 }
 func drawWideTile(
   x: Int,
@@ -243,11 +258,7 @@ func generateTiles(lines: consuming [Line]) -> [Tile] {
     let dir = if dy > 0 { 1 } else { -1 }
     // print("new dy=\(dy) yStart=\(yStart) yEnd=\(yEnd)")
     for y in stride(from: yStart, through: yEnd, by: dir) {
-      // let yBinnedLine = Line(line.sample(t1), line.sample(t2))
       let yBinnedLine = line.crop(y: Float(TILE_SIZE * y)...(Float(TILE_SIZE * (y + 1))))
-
-      // ignore horizontal line
-      // if yBinnedLine.start.y == yBinnedLine.end.y { continue }
 
       // print(line, yBinnedLine)
       // print(" - \(yBinnedLine)")
@@ -286,24 +297,8 @@ func generateTiles(lines: consuming [Line]) -> [Tile] {
 struct Strip {
   var x: UInt16
   var y: UInt16
-
-  // tileSize offset into coverage buffer
   var coverageBuffer: UnsafeBufferPointer<Float>
   var shouldFillLeft: Bool
-  // var _coverageIndex: UInt32
-
-  // var coverageIndex: UInt32 {
-  //   _coverageIndex & ~(0x1 << 31)
-  // }
-
-  // var shouldFillLeft: Bool {
-  //   get {
-  //     (_coverageIndex >> 31) == 0x1
-  //   }
-  //   set {
-  //     _coverageIndex = ((newValue ? 0x1 : 0x0) << 31) | coverageIndex
-  //   }
-  // }
 }
 /// Long-lived coverage storage behaving like a real allocator: regions are carved from
 /// slabs via a first-fit free list and handed back with `free`. When nothing fits, a new
@@ -389,6 +384,7 @@ struct Coverage: @unchecked Sendable {
   let index: Int
   let buffer: UnsafeMutableBufferPointer<Float>
 }
+
 func generateStrips(
   tiles: borrowing Span<Tile>,
   arena: CoverageArena,
