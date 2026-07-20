@@ -58,11 +58,6 @@ class SparseStripRenderer: @unchecked Sendable {
   // render-thread only; workers never touch it
   var stripsCache: [StripCacheKey: CachedStrips] = [:]
 
-  /// order the wide tiles are handed to workers in, shuffled once and reused: the point is to
-  /// break the correlation between cost and index, which one fixed permutation does as well as
-  /// a fresh one, without reshuffling every frame
-  private var tileOrder: [Int] = []
-
   func push(
     ops: Span<DrawOp>,
     // the renderer should also own pixels storage tho
@@ -133,24 +128,17 @@ class SparseStripRenderer: @unchecked Sendable {
     let wideTileCommands = generateWideTileCommands(
       width: width, height: height, strips: strips, ops: ops, tileSize: TILE_SIZE)
 
-    if tileOrder.count != wideTileCommands.tileCount {
-      tileOrder = Array(0..<wideTileCommands.tileCount)
-      tileOrder.shuffle()
-    }
-    let order = tileOrder
-
+    let tileCount = wideTileCommands.tileCount
     let allCommands = wideTileCommands.commands.span
     let offsets = wideTileCommands.offsets
     pixels.withUnsafeMutableBufferPointer { buffer in
       nonisolated(unsafe) let buffer = buffer
 
-      // Tiles cost wildly different amounts — a dense middle, near-empty margins — and in
-      // index order the expensive ones sit next to each other. Workers pull tasks off a shared
-      // counter, so a clump arriving near the end leaves everyone else idle waiting on it.
-      // Shuffling decorrelates cost from task index, which flattens the tail.
-      nonisolated(unsafe) let order = order
-      parallelFor(count: wideTileCommands.tileCount, threads: coreCount) { task, _ in
-        let i = order[task]
+      // Natural order on purpose. Tile cost varies a lot (dense middle, empty margins), but
+      // parallelFor hands out one task at a time off a shared counter, so it already balances
+      // dynamically — permuting the order only gives up pixel-buffer locality. Measured: a
+      // coprime-stride permutation was slower at every canvas size.
+      parallelFor(count: tileCount, threads: coreCount) { i, _ in
         let x = i % wideTileXCount
         let y = i / wideTileXCount
 
