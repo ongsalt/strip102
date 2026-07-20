@@ -4,6 +4,9 @@ import Synchronization
 
 let TILE_SIZE: Int = 4
 let WIDE_TILE_WIDTH: Int = 256
+/// alpha, red, green, blue — the wide tile staging buffer is planar, so a blend touches one
+/// channel across four rows at a time instead of gathering four interleaved bytes per pixel
+let WIDE_TILE_PLANES: Int = 4
 
 class SparseStripRenderer: @unchecked Sendable {
   let coreCount = getRealCoreCount()
@@ -16,6 +19,10 @@ class SparseStripRenderer: @unchecked Sendable {
   /// it is never zeroed on handout — generateStrips zeroes the slice it needs per strip
   let scratchBuffers: [UnsafeMutableBufferPointer<Float>]
 
+  /// per-worker staging buffer for one wide tile, so a tile's whole op list blends in L1
+  /// and the global pixel buffer is touched once on the way in and once on the way out
+  let wideTileScratch: [UnsafeMutableBufferPointer<SIMD4<Float>>]
+
   init() {
     coverageArenas = (0..<coreCount).map { _ in
       CoverageArena(tileCount: 1024 * 128)
@@ -23,10 +30,16 @@ class SparseStripRenderer: @unchecked Sendable {
     scratchBuffers = (0..<coreCount).map { _ in
       .allocate(capacity: TILE_SIZE * TILE_SIZE * 1024)
     }
+    wideTileScratch = (0..<coreCount).map { _ in
+      .allocate(capacity: WIDE_TILE_PLANES * WIDE_TILE_WIDTH)
+    }
   }
 
   deinit {
     for buffer in scratchBuffers {
+      buffer.deallocate()
+    }
+    for buffer in wideTileScratch {
       buffer.deallocate()
     }
   }
@@ -135,19 +148,21 @@ class SparseStripRenderer: @unchecked Sendable {
 
       // Might generate a colmun major scratch buffer (rx4,gx4,bx4,ax4) per thread
       // each thread should keep a 256x4 column major blend scratch?
-      parallelFor(count: wideTileCommands.tileCount, threads: coreCount) { i, _ in
+      parallelFor(count: wideTileCommands.tileCount, threads: coreCount) { [self] i, thread in
         let x = i % wideTileXCount
         let y = i / wideTileXCount
 
         drawWideTile(
           x: x, y: y, ops: allCommands.extracting(offsets[i]..<offsets[i + 1]),
           pixels: buffer.baseAddress!,
-          width: width, height: height
+          width: width, height: height,
+          scratch: wideTileScratch[thread].baseAddress!
         )
       }
     }
   }
 }
+
 struct Tile {
   let x: UInt16
   let y: UInt16

@@ -171,7 +171,7 @@ final class BandedScanlineRenderer: @unchecked Sendable {
     // flatten the draw list into something plainly Sendable, so the band workers never
     // reach back into the ops span
     let jobs = (0..<ops.count).map { i in
-      (color: Color8(ops[unchecked: i].color), fillRule: ops[unchecked: i].path.fillRule,
+      (color: ops[unchecked: i].color.pixel, fillRule: ops[unchecked: i].path.fillRule,
         lines: banded[i]!)
     }
 
@@ -304,7 +304,7 @@ private func resolve(
   bandTop: Int,
   rowCount: Int,
   width: Int,
-  source: Color8,
+  source: Pixel,
   fillRule: FillRule,
   background: Band,
   pixels: UnsafeMutablePointer<Pixel>
@@ -326,8 +326,7 @@ private func resolve(
   // a run of columns where every row is fully inside the shape. Only worth taking when the
   // source is opaque: then the run is a straight overwrite, one memset per row, and the
   // per-pixel blend (and its per-column SIMD tail) is skipped entirely
-  let opaqueSource = source.alpha == 255
-  let solidPixel: Pixel = [source.red, source.green, source.blue, source.alpha]
+  let opaqueSource = source.w >= 1
   var runStart = -1
 
   @inline(__always)
@@ -338,7 +337,7 @@ private func resolve(
       // bandTop + lane < height and the run stays inside dirtyStart...dirtyEnd < width
       let start = (bandTop + lane) * width + runStart
       UnsafeMutableBufferPointer(start: pixels + start, count: count)
-        .update(repeating: solidPixel)
+        .update(repeating: source)
     }
     runStart = -1
   }

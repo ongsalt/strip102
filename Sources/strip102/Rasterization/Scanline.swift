@@ -1,7 +1,18 @@
 import Foundation
 
-/// RGBA8, straight (non-premultiplied) alpha
-public typealias Pixel = [4 of UInt8]
+/// RGBA, premultiplied alpha, one float per channel in the 0...1 range. Premultiplied because
+/// source-over then costs a multiply and a fused multiply-add per pixel with no division at
+/// all; the unpremultiply happens once, when the image is written out.
+public typealias Pixel = SIMD4<Float>
+
+extension Color {
+  /// this color in the canvas' storage format. Deliberately unclamped: out-of-gamut and
+  /// out-of-range values stay intact all the way through compositing, and are only brought
+  /// into range when the image is written out.
+  var pixel: Pixel {
+    Pixel(red * alpha, green * alpha, blue * alpha, alpha)
+  }
+}
 
 
 /// Selects which rasterizer `fill` dispatches to.
@@ -67,8 +78,8 @@ public func fillScanline(
   // fill of everything after the current pixel
   var coverageTable = [Float](repeating: 0, count: w)
 
-  // quantize once per fill, not once per pixel
-  let source = Color8(color)
+  // premultiply once per fill, not once per pixel
+  let source = color.pixel
 
   // x-range still holding nonzero values from the last row that wrote to the tables (empty
   // when dirtyStart > dirtyEnd). Only that range needs clearing before the next row's
@@ -173,39 +184,17 @@ public func fillScanline(
   }
 }
 
-/// Source-over blended directly in encoded (non-linear) byte space using integer math: cheaper
-/// than linear-light float blending, at the cost of darkened edges where a light shape overlaps
-/// a dark background.
+/// Source-over in encoded (non-linear) space, premultiplied: scale the source by coverage, then
+/// one fused multiply-add against the destination. No division, and all four channels at once.
+///
+/// `source` must already be premultiplied — use `Color.pixel`. Blending in encoded rather than
+/// linear-light space darkens edges where a light shape overlaps a dark background, which is the
+/// same tradeoff the byte-integer version made.
 @inline(__always)
-func blend(_ source: Color8, _ destination: inout Pixel, _ opacity: Float) {
-  let sourceAlpha = UInt32(source.alpha) * UInt32(opacity * 255.0) / 255
-
-  if sourceAlpha == 255 {
-    destination[0] = source.red
-    destination[1] = source.green
-    destination[2] = source.blue
-    destination[3] = source.alpha
-    return
-  }
-
-  let destinationAlpha = UInt32(destination[3])
-  let outAlpha = sourceAlpha + destinationAlpha * (255 - sourceAlpha) / 255
-
-  if outAlpha == 0 {
-    destination = [0, 0, 0, 0]
-    return
-  }
-
-  @inline(__always)
-  func compositeChannel(_ s: UInt8, _ d: UInt8) -> UInt8 {
-    let out = (UInt32(s) * sourceAlpha + UInt32(d) * destinationAlpha * (255 - sourceAlpha) / 255) / outAlpha
-    return UInt8(truncatingIfNeeded: out)
-  }
-
-  destination[0] = compositeChannel(source.red, destination[0])
-  destination[1] = compositeChannel(source.green, destination[1])
-  destination[2] = compositeChannel(source.blue, destination[2])
-  destination[3] = UInt8(outAlpha)
+func blend(_ source: Pixel, _ destination: inout Pixel, _ opacity: Float) {
+  // scaling a premultiplied color by coverage scales its alpha too, which is exactly right
+  let contribution = source * opacity
+  destination = contribution + destination * (1 - contribution.w)
 }
 
 /// triangle wave: 0 -> 1 over the first winding, 1 -> 0 over the second, and so on

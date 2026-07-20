@@ -50,7 +50,7 @@ public struct Canvas: ~Copyable {
     self.fillAlgorithm = fillAlgorithm
     self.transform = transform
     self.pixels = .allocate(capacity: width * height)
-    self.pixels.initialize(repeating: [0, 0, 0, 0])
+    self.pixels.initialize(repeating: .zero)
   }
 
   deinit {
@@ -108,8 +108,7 @@ public struct Canvas: ~Copyable {
   /// Overwrites every pixel with `color`. Rasterizes immediately: it ignores the transform and
   /// clobbers whatever is there, so ordering against recorded ops would be a lie.
   public mutating func clear(to color: Color = Color(.srgb, red: 0, green: 0, blue: 0, alpha: 0)) {
-    let c = Color8(color)
-    pixels.update(repeating: [c.red, c.green, c.blue, c.alpha])
+    pixels.update(repeating: color.pixel)
   }
 
   // MARK: - Rasterizing
