@@ -4,9 +4,6 @@ import Synchronization
 
 let TILE_SIZE: Int = 4
 let WIDE_TILE_WIDTH: Int = 256
-/// alpha, red, green, blue — the wide tile staging buffer is planar, so a blend touches one
-/// channel across four rows at a time instead of gathering four interleaved bytes per pixel
-let WIDE_TILE_PLANES: Int = 4
 
 class SparseStripRenderer: @unchecked Sendable {
   let coreCount = getRealCoreCount()
@@ -19,10 +16,6 @@ class SparseStripRenderer: @unchecked Sendable {
   /// it is never zeroed on handout — generateStrips zeroes the slice it needs per strip
   let scratchBuffers: [UnsafeMutableBufferPointer<Float>]
 
-  /// per-worker staging buffer for one wide tile, so a tile's whole op list blends in L1
-  /// and the global pixel buffer is touched once on the way in and once on the way out
-  let wideTileScratch: [UnsafeMutableBufferPointer<SIMD4<Float>>]
-
   init() {
     coverageArenas = (0..<coreCount).map { _ in
       CoverageArena(tileCount: 1024 * 128)
@@ -30,16 +23,10 @@ class SparseStripRenderer: @unchecked Sendable {
     scratchBuffers = (0..<coreCount).map { _ in
       .allocate(capacity: TILE_SIZE * TILE_SIZE * 1024)
     }
-    wideTileScratch = (0..<coreCount).map { _ in
-      .allocate(capacity: WIDE_TILE_PLANES * WIDE_TILE_WIDTH)
-    }
   }
 
   deinit {
     for buffer in scratchBuffers {
-      buffer.deallocate()
-    }
-    for buffer in wideTileScratch {
       buffer.deallocate()
     }
   }
@@ -70,6 +57,11 @@ class SparseStripRenderer: @unchecked Sendable {
   // TODO: entries for dead paths leak until their address is reused; sweep periodically
   // render-thread only; workers never touch it
   var stripsCache: [StripCacheKey: CachedStrips] = [:]
+
+  /// order the wide tiles are handed to workers in, shuffled once and reused: the point is to
+  /// break the correlation between cost and index, which one fixed permutation does as well as
+  /// a fresh one, without reshuffling every frame
+  private var tileOrder: [Int] = []
 
   func push(
     ops: Span<DrawOp>,
@@ -141,22 +133,31 @@ class SparseStripRenderer: @unchecked Sendable {
     let wideTileCommands = generateWideTileCommands(
       width: width, height: height, strips: strips, ops: ops, tileSize: TILE_SIZE)
 
+    if tileOrder.count != wideTileCommands.tileCount {
+      tileOrder = Array(0..<wideTileCommands.tileCount)
+      tileOrder.shuffle()
+    }
+    let order = tileOrder
+
     let allCommands = wideTileCommands.commands.span
     let offsets = wideTileCommands.offsets
     pixels.withUnsafeMutableBufferPointer { buffer in
       nonisolated(unsafe) let buffer = buffer
 
-      // Might generate a colmun major scratch buffer (rx4,gx4,bx4,ax4) per thread
-      // each thread should keep a 256x4 column major blend scratch?
-      parallelFor(count: wideTileCommands.tileCount, threads: coreCount) { [self] i, thread in
+      // Tiles cost wildly different amounts — a dense middle, near-empty margins — and in
+      // index order the expensive ones sit next to each other. Workers pull tasks off a shared
+      // counter, so a clump arriving near the end leaves everyone else idle waiting on it.
+      // Shuffling decorrelates cost from task index, which flattens the tail.
+      nonisolated(unsafe) let order = order
+      parallelFor(count: wideTileCommands.tileCount, threads: coreCount) { task, _ in
+        let i = order[task]
         let x = i % wideTileXCount
         let y = i / wideTileXCount
 
         drawWideTile(
           x: x, y: y, ops: allCommands.extracting(offsets[i]..<offsets[i + 1]),
           pixels: buffer.baseAddress!,
-          width: width, height: height,
-          scratch: wideTileScratch[thread].baseAddress!
+          width: width, height: height
         )
       }
     }
