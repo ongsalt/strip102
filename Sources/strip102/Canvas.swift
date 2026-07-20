@@ -25,6 +25,10 @@ public struct Canvas: ~Copyable {
   /// lazy so a scanline-only canvas never pays for the coverage arenas.
   private lazy var sparseStripRenderer = SparseStripRenderer()
 
+  /// same deal: kept alive across flushes for its band cache, lazy so the other modes
+  /// never pay for its scratch buffers
+  private lazy var bandedScanlineRenderer = BandedScanlineRenderer()
+
   /// The current transformation matrix, applied to every path recorded from now on.
   public var transform: Affine
 
@@ -115,12 +119,17 @@ public struct Canvas: ~Copyable {
     guard !ops.isEmpty else { return }
 
     var span = pixels.mutableSpan
-    if self.fillAlgorithm == .scanline {
+    switch self.fillAlgorithm {
+    case .scanline:
       for op in ops {
-        fillScanline(path: op.path, color: op.color, pixels: &span, width: width, height: height)
+        fillScanline(
+          path: op.path, color: op.color, transform: op.transform, pixels: &span,
+          width: width, height: height)
       }
-    } else {
+    case .sparseStrip:
       sparseStripRenderer.push(ops: ops.span, pixels: &span, width: width, height: height)
+    case .bandedScanline:
+      bandedScanlineRenderer.push(ops: ops.span, pixels: &span, width: width, height: height)
     }
 
     ops.removeAll(keepingCapacity: true)

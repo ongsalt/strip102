@@ -10,6 +10,9 @@ public enum FillAlgorithm: String, CaseIterable, Sendable {
   case scanline
   /// `fillSparseStrip`: tile-binned lines gathered into sparse strips.
   case sparseStrip = "sparse-strip"
+  /// `BandedScanlineRenderer`: scanline over cached 16-row bands, rendered in parallel with
+  /// a SIMD16 (one lane per row) winding accumulator.
+  case bandedScanline = "banded-scanline"
 
   public static let `default`: FillAlgorithm = .scanline
 }
@@ -207,7 +210,7 @@ func blend(_ source: Color8, _ destination: inout Pixel, _ opacity: Float) {
 
 /// triangle wave: 0 -> 1 over the first winding, 1 -> 0 over the second, and so on
 @inline(__always)
-private func evenOddOpacity(_ winding: Float) -> Float {
+func evenOddOpacity(_ winding: Float) -> Float {
   let magnitude = min(abs(winding), Float(1 << 24))
   let fraction = magnitude.truncatingRemainder(dividingBy: 1)
   return Int(magnitude) % 2 == 0 ? fraction : 1 - fraction

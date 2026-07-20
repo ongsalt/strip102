@@ -1,11 +1,10 @@
 import Dispatch
-
 import Foundation
-
 import Synchronization
 
 let TILE_SIZE: Int = 4
 let WIDE_TILE_WIDTH: Int = 256
+
 class SparseStripRenderer: @unchecked Sendable {
   let coreCount = getRealCoreCount()
 
@@ -104,7 +103,7 @@ class SparseStripRenderer: @unchecked Sendable {
         arena: arena,
         scratchBuffer: scratchBuffer
       )
-      
+
       return CachedStrips(strips: strips, arena: arena)
     }
 
@@ -406,9 +405,9 @@ func generateStrips(
       Strip(x: x, y: y, coverageBuffer: UnsafeBufferPointer(coverage), shouldFillLeft: w != 0))
     i += 1
   }
-
   return strips
 }
+
 func computeCoverage(
   tiles: borrowing Span<Tile>,
   // inclusive
