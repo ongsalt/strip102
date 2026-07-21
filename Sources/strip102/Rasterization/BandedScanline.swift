@@ -304,7 +304,7 @@ private func resolve(
   bandTop: Int,
   rowCount: Int,
   width: Int,
-  source: Pixel,
+  source: PixelF,
   fillRule: FillRule,
   background: Band,
   pixels: UnsafeMutablePointer<Pixel>
@@ -326,7 +326,8 @@ private func resolve(
   // a run of columns where every row is fully inside the shape. Only worth taking when the
   // source is opaque: then the run is a straight overwrite, one memset per row, and the
   // per-pixel blend (and its per-column SIMD tail) is skipped entirely
-  let opaqueSource = source.w >= 1
+  let opaqueSource = source.w >= 255
+  let solidPixel = pack(source)
   var runStart = -1
 
   @inline(__always)
@@ -337,7 +338,7 @@ private func resolve(
       // bandTop + lane < height and the run stays inside dirtyStart...dirtyEnd < width
       let start = (bandTop + lane) * width + runStart
       UnsafeMutableBufferPointer(start: pixels + start, count: count)
-        .update(repeating: source)
+        .update(repeating: solidPixel)
     }
     runStart = -1
   }

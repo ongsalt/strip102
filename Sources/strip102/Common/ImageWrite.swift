@@ -20,17 +20,15 @@ func writePng(
     let alpha = pixel.w
     guard alpha > 0 else { continue }
 
-    // straight = premultiplied / alpha, rounded and clamped into a byte
-    let scale = 255 / alpha
-    let straight = pixel * SIMD4(scale, scale, scale, 255) + SIMD4(repeating: 0.5)
-    let clamped = straight
-      .replacing(with: SIMD4.zero, where: straight .< .zero)
-      .replacing(with: SIMD4(repeating: 255), where: straight .> SIMD4(repeating: 255))
+    // straight = premultiplied / alpha
+    let working = unpack(pixel)
+    let scale = 255 / working.w
+    let straight = packBytes(working * PixelF(scale, scale, scale, 1))
 
-    bytes[i * 4 + 0] = UInt8(clamped.x)
-    bytes[i * 4 + 1] = UInt8(clamped.y)
-    bytes[i * 4 + 2] = UInt8(clamped.z)
-    bytes[i * 4 + 3] = UInt8(clamped.w)
+    bytes[i * 4 + 0] = straight.x
+    bytes[i * 4 + 1] = straight.y
+    bytes[i * 4 + 2] = straight.z
+    bytes[i * 4 + 3] = straight.w
   }
 
   let status = stbi_write_png(

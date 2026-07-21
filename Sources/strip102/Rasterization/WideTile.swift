@@ -213,10 +213,11 @@ func drawWideTile(
 
       let source = color.pixel
       if color.alpha == 1.0 {
+        let solidPixel = pack(source)
         for row in 0..<rowCount {
           let rowStart = (tileStartY + row) * width
           UnsafeMutableBufferPointer(start: pixels + rowStart + startX, count: endX - startX)
-            .update(repeating: source)
+            .update(repeating: solidPixel)
         }
       } else {
         for row in 0..<rowCount {

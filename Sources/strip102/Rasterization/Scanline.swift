@@ -1,17 +1,72 @@
 import Foundation
 
-/// RGBA, premultiplied alpha, one float per channel in the 0...1 range. Premultiplied because
-/// source-over then costs a multiply and a fused multiply-add per pixel with no division at
-/// all; the unpremultiply happens once, when the image is written out.
-public typealias Pixel = SIMD4<Float>
+/// The working format: premultiplied RGBA, one float per channel, on a 0...255 scale.
+/// Premultiplied because source-over is then a multiply and a fused multiply-add, with no
+/// division anywhere. Everything composites in this type whatever `Pixel` is.
+public typealias PixelF = SIMD4<Float>
+
+/// Clamps and rounds a working value into bytes. Used for image output regardless of what
+/// `Pixel` is.
+///
+/// The rounding goes through the magic-number bias: adding 2^23 pushes the value against the
+/// mantissa's low end, leaving the round-to-nearest integer in the low bits for the truncating
+/// narrow to pick up. The obvious `SIMD4<Int32>(clamped)` traps on out-of-range input, so Swift
+/// emits a call per lane instead of one vectorized convert.
+@inline(__always)
+func packBytes(_ value: PixelF) -> SIMD4<UInt8> {
+  let clamped =
+    value
+    .replacing(with: PixelF.zero, where: value .< PixelF.zero)
+    .replacing(with: PixelF(repeating: 255), where: value .> PixelF(repeating: 255))
+
+  let biased = clamped + PixelF(repeating: 0x1p23)
+  return SIMD4<UInt8>(truncatingIfNeeded: unsafeBitCast(biased, to: SIMD4<UInt32>.self))
+}
+
+#if PixelF32
+
+  /// Premultiplied RGBA, float per channel, 0...255. Build with `--traits PixelF32`.
+  ///
+  /// Blending never converts, and values stay unclamped through compositing — but the buffer is
+  /// four times the bytes, which dominates once the canvas stops fitting in cache.
+  public typealias Pixel = PixelF
+
+  @inline(__always)
+  func unpack(_ pixel: Pixel) -> PixelF { pixel }
+
+  @inline(__always)
+  func pack(_ value: PixelF) -> Pixel { value }
+
+#else
+
+  /// Premultiplied RGBA8. Storage only — nothing composites in this type.
+  ///
+  /// The pixel buffer is the one allocation that scales with the canvas, so its width decides
+  /// whether large renders are DRAM-bound: at 3600² this is 52MB against a float buffer's
+  /// 207MB. The cost is 8 bits of precision, which heavy overdraw can band.
+  public typealias Pixel = SIMD4<UInt8>
+
+  @inline(__always)
+  func unpack(_ pixel: Pixel) -> PixelF {
+    // widening vectorizes in both steps; it is the float->int direction that needs the bias
+    PixelF(SIMD4<UInt32>(truncatingIfNeeded: pixel))
+  }
+
+  @inline(__always)
+  func pack(_ value: PixelF) -> Pixel { packBytes(value) }
+
+#endif
 
 extension Color {
-  /// this color in the canvas' storage format. Deliberately unclamped: out-of-gamut and
-  /// out-of-range values stay intact all the way through compositing, and are only brought
-  /// into range when the image is written out.
-  var pixel: Pixel {
-    Pixel(red * alpha, green * alpha, blue * alpha, alpha)
+  /// this color premultiplied, in the working scale. Deliberately unclamped: out-of-range
+  /// values only get brought into range when they are packed.
+  var pixel: PixelF {
+    let scaled = alpha * 255
+    return PixelF(red * scaled, green * scaled, blue * scaled, scaled)
   }
+
+  /// this color in the canvas' storage format
+  var storage: Pixel { pack(pixel) }
 }
 
 
@@ -191,10 +246,11 @@ public func fillScanline(
 /// linear-light space darkens edges where a light shape overlaps a dark background, which is the
 /// same tradeoff the byte-integer version made.
 @inline(__always)
-func blend(_ source: Pixel, _ destination: inout Pixel, _ opacity: Float) {
+func blend(_ source: PixelF, _ destination: inout Pixel, _ opacity: Float) {
   // scaling a premultiplied color by coverage scales its alpha too, which is exactly right
   let contribution = source * opacity
-  destination = contribution + destination * (1 - contribution.w)
+  let inverse = 1 - contribution.w * (1 / 255)
+  destination = pack(contribution + unpack(destination) * inverse)
 }
 
 /// triangle wave: 0 -> 1 over the first winding, 1 -> 0 over the second, and so on

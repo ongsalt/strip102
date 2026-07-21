@@ -5,6 +5,17 @@ import PackageDescription
 
 let package = Package(
     name: "strip102",
+    traits: [
+        .trait(
+            name: "PixelF32",
+            description: """
+                Store canvas pixels as premultiplied float (SIMD4<Float>) instead of \
+                premultiplied RGBA8. Blending never converts and values stay unclamped through \
+                compositing, at four times the bytes per pixel — which costs more than the \
+                conversions save once the canvas stops fitting in cache.
+                """
+        )
+    ],
     dependencies: [
         .package(url: "https://github.com/apple/swift-argument-parser", from: "1.7.0")
     ],
