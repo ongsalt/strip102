@@ -38,7 +38,7 @@ class SparseStripRenderer {
 
   /// strips generated straight into one worker's arena; the regions go back to it on eviction.
   /// Only ever released on the render thread (cache purge or end of frame), never by a worker
-  final class CachedStrips {
+  final class CachedStrips: @unchecked Sendable {
     let strips: [Strip]
     private let arena: CoverageArena
 
