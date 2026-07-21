@@ -11,7 +11,7 @@ struct WideTileCommands {
 func generateWideTileCommands(
   width: Int,
   height: Int,
-  strips: [[Strip]],
+  cachedStrips: Span<SparseStripRenderer.CachedStrips?>,
   ops: Span<DrawOp>,
   tileSize: Int
 ) -> WideTileCommands {
@@ -21,8 +21,6 @@ func generateWideTileCommands(
 
   let threadCount = max(1, min(getRealCoreCount(), wideTileYCount))
   let rowChunk = (wideTileYCount + threadCount - 1) / threadCount
-
-  nonisolated(unsafe) let strips = strips
 
   // Pass 1: count commands per wide tile (same splitting logic as pass 3, tallying only), so
   // the flat array's per-tile slices can be sized exactly via a prefix sum below.
@@ -34,7 +32,7 @@ func generateWideTileCommands(
       let yEnd = min(yStart + rowChunk, wideTileYCount)
       guard yStart < yEnd else { return }
       walkStrips(
-        ops: ops, strips: strips, tileSize: tileSize, wideTileXCount: wideTileXCount,
+        ops: ops, strips: cachedStrips, tileSize: tileSize, wideTileXCount: wideTileXCount,
         tileCount: tileCount, yStart: yStart, yEnd: yEnd
       ) { index, _ in
         countsBuffer[index] += 1
@@ -70,7 +68,7 @@ func generateWideTileCommands(
         let yEnd = min(yStart + rowChunk, wideTileYCount)
         guard yStart < yEnd else { return }
         walkStrips(
-          ops: ops, strips: strips, tileSize: tileSize, wideTileXCount: wideTileXCount,
+          ops: ops, strips: cachedStrips, tileSize: tileSize, wideTileXCount: wideTileXCount,
           tileCount: tileCount, yStart: yStart, yEnd: yEnd
         ) { index, op in
           let position = cursorBuffer[index]
@@ -88,7 +86,7 @@ func generateWideTileCommands(
 @inline(__always)
 private func walkStrips(
   ops: Span<DrawOp>,
-  strips: [[Strip]],
+  strips: Span<SparseStripRenderer.CachedStrips?>,
   tileSize: Int,
   wideTileXCount: Int,
   tileCount: Int,
@@ -97,12 +95,9 @@ private func walkStrips(
   emit: (Int, WideTileDrawOp) -> Void
 ) {
   for i in ops.indices {
-    // generate command in painter order
-    let opStrips = strips[i]
-
     // in tile unit (x, y), end of the last strip emitted on this row
     var lastStripEnd: (x: Int, y: Int)?
-    for strip in opStrips {
+    for strip in strips[i]!.strips {
       let wideTileY = Int(strip.y)
       guard wideTileY >= yStart && wideTileY < yEnd else { continue }
 

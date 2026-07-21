@@ -125,17 +125,12 @@ class SparseStripRenderer: @unchecked Sendable {
       entries[i] = built[task]
     }
 
-    // a purge next frame must not free regions this frame still points into
-    // swift ends an object's lifetime at its last use, not end of the scope
-    defer { withExtendedLifetime(entries) {} }
-    let strips = entries.map { $0!.strips }
-
     // generate per WideTile (screen space) draw commands ??
     let wideTileXCount = Int((Float(width) / 256).rounded(.up))
 
     // wide tile is in row major for conveniece
     let wideTileCommands = generateWideTileCommands(
-      width: width, height: height, strips: strips, ops: ops, tileSize: TILE_SIZE)
+      width: width, height: height, cachedStrips: entries.span, ops: ops, tileSize: TILE_SIZE)
 
     let tileCount = wideTileCommands.tileCount
     let allCommands = wideTileCommands.commands.span
@@ -143,10 +138,6 @@ class SparseStripRenderer: @unchecked Sendable {
     pixels.withUnsafeMutableBufferPointer { buffer in
       nonisolated(unsafe) let buffer = buffer
 
-      // Natural order on purpose. Tile cost varies a lot (dense middle, empty margins), but
-      // parallelFor hands out one task at a time off a shared counter, so it already balances
-      // dynamically — permuting the order only gives up pixel-buffer locality. Measured: a
-      // coprime-stride permutation was slower at every canvas size.
       parallelFor(count: tileCount, threads: coreCount) { i, _ in
         let x = i % wideTileXCount
         let y = i / wideTileXCount
@@ -207,9 +198,6 @@ func generateTiles(lines: consuming [Line], width: Int, height: Int) -> TileSet 
       guard y >= 0 && y < yTileCount else { continue }
 
       let yBinnedLine = line.crop(y: Float(TILE_SIZE * y)...(Float(TILE_SIZE * (y + 1))))
-
-      // print(line, yBinnedLine)
-      // print(" - \(yBinnedLine)")
 
       let xStart = tileIndex(yBinnedLine.start.x)
       let xEnd = tileIndex(yBinnedLine.end.x)
@@ -444,7 +432,7 @@ func computeCoverage(
         let tileStartX = Float(tiles[unchecked: i].x) * Float(TILE_SIZE)
         let line = yBinnedLine.crop(x: tileStartX + Float(lx)...tileStartX + Float(lx + 1))
         // if its out of this pixel, continue
-        if line.xBounds.0 != lx + Int(tiles[unchecked: i].x) * TILE_SIZE { continue }
+        if line.minX != lx + Int(tiles[unchecked: i].x) * TILE_SIZE { continue }
         if line.isPoint { continue }
         // print("> [\(Int(tileStartX) + lx), \(Int(stripStartY) + ly)] \(line)")
 
@@ -503,8 +491,10 @@ extension Line {
       return self
     }
 
-    let t1 = ((range.lowerBound - self.start.y) / dy).clamped(from: 0.0, to: 1.0)
-    let t2 = ((range.upperBound - self.start.y) / dy).clamped(from: 0.0, to: 1.0)
+    let ts = ((SIMD2(range.lowerBound, range.upperBound) - self.start.y) / dy).clamped(from: .zero, to: .one)
+
+    let t1 = ts.x.clamped(from: 0.0, to: 1.0)
+    let t2 = ts.y.clamped(from: 0.0, to: 1.0)
 
     return if start.y > end.y {
       Line(sample(t2), sample(t1))
