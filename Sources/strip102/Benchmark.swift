@@ -9,7 +9,10 @@ func benchSvg(
   _ filename: String,
   scale: Float = 1.0,
   algorithm: FillAlgorithm = .default,
-  iterations: Int = 1000
+  iterations: Int = 1000,
+  /// marks every path dirty each frame, so caches never hit. Models animating geometry, where
+  /// the rasterization the cache normally hides has to be paid every frame
+  invalidateEveryFrame: Bool = false
 ) {
   let parsed = parseSvg(filename)
   defer { nsvgDelete(parsed) }
@@ -29,6 +32,7 @@ func benchSvg(
     let start = clock.now
     canvas.clear()
     for (path, color) in drawList {
+      if invalidateEveryFrame { path.dirty = true }
       canvas.draw(path, color: color)
     }
     canvas.flush()
@@ -37,20 +41,34 @@ func benchSvg(
 
   let total = durations.reduce(Duration.zero, +)
   let average = total / iterations
-  let minimum = durations.min()!
   let maximum = durations.max()!
+  let slowestIteration = durations.firstIndex(of: maximum)!
 
   func seconds(_ duration: Duration) -> Double {
     let components = duration.components
     return Double(components.seconds) + Double(components.attoseconds) * 1e-18
   }
 
-  let totalStr = String(format: "%.8f", seconds(total))
-  let avgStr = String(format: "%.6f", seconds(average) * 1000)
-  let minStr = String(format: "%.6f", seconds(minimum) * 1000)
-  let maxStr = String(format: "%.6f", seconds(maximum) * 1000)
+  func milliseconds(_ duration: Duration) -> String {
+    String(format: "%.3f", seconds(duration) * 1000)
+  }
+
+  // percentiles, because a single max says nothing about whether the tail is one cold first
+  // frame or jitter spread through the run
+  let sorted = durations.sorted()
+  func percentile(_ q: Double) -> Duration {
+    sorted[min(Int(Double(sorted.count - 1) * q), sorted.count - 1)]
+  }
 
   print(
-    "bench \(filename) x\(iterations): total=\(totalStr)s, avg=\(avgStr)ms, min=\(minStr)ms, max=\(maxStr)ms"
+    """
+    bench \(filename) x\(iterations): total=\(String(format: "%.6f", seconds(total)))s \
+    avg=\(milliseconds(average))ms
+      min=\(milliseconds(sorted[0]))ms p50=\(milliseconds(percentile(0.5)))ms \
+    p90=\(milliseconds(percentile(0.9)))ms p99=\(milliseconds(percentile(0.99)))ms \
+    max=\(milliseconds(maximum))ms
+      slowest was iteration \(slowestIteration); \
+    first five: \(durations.prefix(5).map(milliseconds).joined(separator: ", "))ms
+    """
   )
 }

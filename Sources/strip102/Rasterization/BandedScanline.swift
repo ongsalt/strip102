@@ -21,6 +21,13 @@ struct BandedLines: Sendable {
   }
 }
 
+/// Everything a band needs from one draw op.
+private struct BandJob {
+  let source: PixelF
+  let fillRule: FillRule
+  let lines: BandedLines
+}
+
 /// floor division, so a line above the canvas bins into a negative band instead of band 0
 @inline(__always)
 private func bandIndex(_ y: Int) -> Int {
@@ -135,21 +142,32 @@ final class BandedScanlineRenderer: @unchecked Sendable {
 
     // serial prepass: purge dirty paths, resolve hits, collect misses. All cache mutation
     // happens here on the render thread
-    var banded: [BandedLines?] = []
-    banded.reserveCapacity(ops.count)
-    var misses: [Int] = []
+    // Collect every dirty id first and purge in one sweep. Filtering per dirty path instead
+    // rebuilds the whole dictionary once per path — O(paths x cache), which is invisible while
+    // geometry is static and quadratic the moment it animates.
+    var dirtyIds: Set<Path.ID> = []
     for i in 0..<ops.count {
       let path = ops[unchecked: i].path
       if path.dirty {
         // the old shape under this id is gone; this also drops entries a freed path left
         // behind when its storage address gets reused
-        let id = path.id
-        cache = cache.filter { $0.key.pathId != id }
+        dirtyIds.insert(path.id)
         path.dirty = false
       }
+    }
+    if !dirtyIds.isEmpty {
+      cache = cache.filter { !dirtyIds.contains($0.key.pathId) }
+    }
 
+    // resolving hits only after every purge, so a path drawn twice cannot pick up a stale
+    // entry on its first op and a rebuilt one on its second
+    var banded: [BandedLines?] = []
+    banded.reserveCapacity(ops.count)
+    var misses: [Int] = []
+    for i in 0..<ops.count {
       let key = CacheKey(
-        pathId: path.id, transform: ops[unchecked: i].transform, height: height)
+        pathId: ops[unchecked: i].path.id, transform: ops[unchecked: i].transform,
+        height: height)
       let hit = cache[key]
       if hit == nil { misses.append(i) }
       banded.append(hit)
@@ -168,10 +186,12 @@ final class BandedScanlineRenderer: @unchecked Sendable {
       banded[i] = built[task]
     }
 
-    // flatten the draw list into something plainly Sendable, so the band workers never
-    // reach back into the ops span
+    // flatten the draw list into plain data, so the band workers never reach back into the ops
+    // span and never touch a refcount
     let jobs = (0..<ops.count).map { i in
-      (color: ops[unchecked: i].color.pixel, fillRule: ops[unchecked: i].path.fillRule,
+      BandJob(
+        source: ops[unchecked: i].color.pixel,
+        fillRule: ops[unchecked: i].path.fillRule,
         lines: banded[i]!)
     }
 
@@ -190,8 +210,11 @@ final class BandedScanlineRenderer: @unchecked Sendable {
         let fill = base
         let coverage = base + self.scratchWidth
 
-        for job in jobs {
-          let range = job.lines.range(inBand: band)
+        // by index, not `for job in jobs`: binding an element copies it, and a `BandedLines`
+        // holds two arrays, so each copy is an atomic retain/release pair — on every worker,
+        // once per op per band. Subscripting borrows in place instead.
+        for j in jobs.indices {
+          let range = jobs[j].lines.range(inBand: band)
           guard !range.isEmpty else { continue }
 
           var dirtyStart = width
@@ -200,7 +223,7 @@ final class BandedScanlineRenderer: @unchecked Sendable {
           var overflowsRight = false
 
           accumulate(
-            lines: job.lines.lines.span.extracting(range),
+            lines: jobs[j].lines.lines, range: range,
             bandTop: bandTop, rowCount: rowCount, width: width,
             fill: fill, coverage: coverage, dirtyStart: &dirtyStart, dirtyEnd: &dirtyEnd,
             background: &background, overflowsRight: &overflowsRight)
@@ -215,7 +238,8 @@ final class BandedScanlineRenderer: @unchecked Sendable {
           resolve(
             fill: fill, coverage: coverage, from: dirtyStart, to: dirtyEnd,
             bandTop: bandTop, rowCount: rowCount, width: width,
-            source: job.color, fillRule: job.fillRule, background: background, pixels: pixels)
+            source: jobs[j].source, fillRule: jobs[j].fillRule, background: background,
+            pixels: pixels)
 
           // hand the scratch back zeroed for the next op, over just the columns touched
           let dirtyCount = dirtyEnd - dirtyStart + 1
@@ -231,7 +255,10 @@ final class BandedScanlineRenderer: @unchecked Sendable {
 /// accumulator: row `y` lands in lane `y - bandTop`.
 @inline(__always)
 private func accumulate(
-  lines: borrowing Span<Line>,
+  // borrowing, so passing the array in costs no retain; the span is built inside, where it
+  // cannot outlive the borrow
+  lines: borrowing [Line],
+  range: Range<Int>,
   bandTop: Int,
   rowCount: Int,
   width: Int,
@@ -242,6 +269,8 @@ private func accumulate(
   background: inout Band,
   overflowsRight: inout Bool
 ) {
+  let lines = lines.span.extracting(range)
+
   for i in lines.indices {
     let line = lines[unchecked: i]
 

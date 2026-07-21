@@ -14,7 +14,8 @@ let package = Package(
                 compositing, at four times the bytes per pixel — which costs more than the \
                 conversions save once the canvas stops fitting in cache.
                 """
-        )
+        ),
+        // .default(enabledTraits: ["PixelF32"])
     ],
     dependencies: [
         .package(url: "https://github.com/apple/swift-argument-parser", from: "1.7.0")

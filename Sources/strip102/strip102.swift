@@ -13,6 +13,14 @@ struct strip102: ParsableCommand {
     @Flag(help: "Run the render pipeline 100 times with no file output, for benchmarking.")
     var bench = false
 
+    @Flag(
+        help: """
+            Mark every path dirty each frame so the strip caches never hit. Models animating \
+            geometry: the default benchmark redraws identical paths, so it only measures \
+            compositing.
+            """)
+    var noCache = false
+
     @Option(
         name: .shortAndLong,
         help: "Output file path. Defaults to the input file's own directory.")
@@ -36,7 +44,8 @@ struct strip102: ParsableCommand {
             idk(algorithm: fillAlgorithm)
         } else {
             if bench {
-                benchSvg(file, scale: scale, algorithm: fillAlgorithm)
+                benchSvg(
+                    file, scale: scale, algorithm: fillAlgorithm, invalidateEveryFrame: noCache)
             } else {
                 importSvg(file, scale: scale, algorithm: fillAlgorithm, output: output)
             }

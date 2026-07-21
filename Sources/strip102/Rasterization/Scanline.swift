@@ -49,7 +49,7 @@ func packBytes(_ value: PixelF) -> SIMD4<UInt8> {
   @inline(__always)
   func unpack(_ pixel: Pixel) -> PixelF {
     // widening vectorizes in both steps; it is the float->int direction that needs the bias
-    PixelF(SIMD4<UInt32>(truncatingIfNeeded: pixel))
+    PixelF(pixel)
   }
 
   @inline(__always)

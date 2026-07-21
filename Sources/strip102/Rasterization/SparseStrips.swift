@@ -68,22 +68,31 @@ class SparseStripRenderer: @unchecked Sendable {
 
     // serial prepass: purge dirty paths and resolve cache hits. All cache mutation and all
     // arena frees happen here on the render thread — the parallel phase only allocates
-    var entries: [CachedStrips?] = []
-    entries.reserveCapacity(ops.count)
-    var misses: [Int] = []
+    // Collect every dirty id first and purge in one sweep. Filtering per dirty path instead
+    // rebuilds the whole dictionary once per path — O(paths x cache), which is invisible while
+    // geometry is static and quadratic the moment it animates.
+    var dirtyIds: Set<Path.ID> = []
     for i in 0..<ops.count {
       let path = ops[unchecked: i].path
       if path.dirty {
         // old shape under this id is gone; this also purges entries a freed path
         // left behind when its storage address gets reused
-        let id = path.id
-        stripsCache = stripsCache.filter { $0.key.pathId != id }
+        dirtyIds.insert(path.id)
         path.dirty = false
       }
+    }
+    if !dirtyIds.isEmpty {
+      stripsCache = stripsCache.filter { !dirtyIds.contains($0.key.pathId) }
+    }
 
-      // when tf will path.dirty need this check again
+    // resolving hits only after every purge, so a path drawn twice cannot pick up a stale
+    // entry on its first op and a rebuilt one on its second
+    var entries: [CachedStrips?] = []
+    entries.reserveCapacity(ops.count)
+    var misses: [Int] = []
+    for i in 0..<ops.count {
       let cached = stripsCache[
-        StripCacheKey(pathId: path.id, affine: ops[unchecked: i].transform)]
+        StripCacheKey(pathId: ops[unchecked: i].path.id, affine: ops[unchecked: i].transform)]
       if cached == nil { misses.append(i) }
       entries.append(cached)
     }
