@@ -491,10 +491,8 @@ extension Line {
       return self
     }
 
-    let ts = ((SIMD2(range.lowerBound, range.upperBound) - self.start.y) / dy).clamped(from: .zero, to: .one)
-
-    let t1 = ts.x.clamped(from: 0.0, to: 1.0)
-    let t2 = ts.y.clamped(from: 0.0, to: 1.0)
+    let t1 = ((range.lowerBound - self.start.y) / dy).clamped(from: 0.0, to: 1.0)
+    let t2 = ((range.upperBound - self.start.y) / dy).clamped(from: 0.0, to: 1.0)
 
     return if start.y > end.y {
       Line(sample(t2), sample(t1))
